@@ -1,0 +1,24 @@
+{
+  "_doc": "Driver Coach shared tuning constants — SINGLE SOURCE OF TRUTH. Read by the JS client core (app/src/core) AND asserted against the Python server cores (build/reference) by build/reference/test_config_parity.py so the two implementations can never silently drift. All values are proposals tuned at live-review against real fleet traces (brief v0.4 §5, cadence deferred). Maker: Forge. Reviewer of record: Warden. Nothing deploys without Felix.",
+  "motion": {
+    "moving_speed_mph": 6.0,
+    "settled_speed_mph": 2.0,
+    "arriving_radius_m": 320.0,
+    "parked_radius_m": 40.0,
+    "settle_to_park_s": 15.0,
+    "move_to_drive_s": 6.0,
+    "arriving_min_dwell_s": 0.0,
+    "max_fix_age_s": 150.0
+  },
+  "flags": {
+    "voice_stop_threshold": 40.0,
+    "voice_deadband": 2.0
+  },
+  "liveness": {
+    "heartbeat_interval_s": 20,
+    "miss_grace_s": 60,
+    "confirm_window_s": 180,
+    "serving_txn_recency_s": 90,
+    "heartbeat_retention_days": 90
+  }
+}
