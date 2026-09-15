@@ -48,6 +48,28 @@ def _recent_pings(cur, truck_id: str, limit: int = 2) -> list:
     return cur.fetchall()
 
 
+def latest_position(
+    cur, truck_id: str, now: Optional[datetime.datetime] = None
+) -> Optional[dict]:
+    """The truck's latest raw position for route-progression (nearest-stop) logic.
+
+    Returns {'lat','lng','fix_age_s'} from the most recent Geotab ping, or None if
+    the truck has no pings. READ-ONLY (single SELECT). Distinct from latest_fix,
+    which needs a target stop to compute distance/speed; this exposes the raw
+    position so the route wiring can find the nearest ordered stop first.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    pings = _recent_pings(cur, truck_id, limit=1)
+    if not pings:
+        return None
+    t0, lat0, lng0 = pings[0]
+    return {
+        "lat": float(lat0),
+        "lng": float(lng0),
+        "fix_age_s": round(max((now - t0).total_seconds(), 0.0), 1),
+    }
+
+
 def latest_fix(
     cur,
     truck_id: str,

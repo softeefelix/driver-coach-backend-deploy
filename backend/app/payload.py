@@ -149,3 +149,44 @@ def build_session_payload(
     # no grade value on the wire for a nominal driver to diff against a coached peer).
     assert_disguise_safe(payload)
     return payload
+
+
+def build_route_payload(
+    next_stop: Optional[dict],
+    route_cluster_id: Optional[int],
+    phase: str,
+    coached: bool,
+    shift_phase: Optional[str] = None,
+    route_count: Optional[str] = None,
+) -> dict:
+    """The disguise-safe body for GET /driver-coach/v1/route (the live poll).
+
+    Ships the CURRENT route state the client re-renders each tick:
+      - route.nextStop  (no coordinates on the wire — disguise, like signin)
+      - phase           the server-computed live motion phase (driving/arriving/parked)
+      - shiftPhase      §11 shift phase (plan/tail/wrap) — layout state, not a flag
+      - routeCount      the plan-strip "N / M" count (or absent)
+      - coach.nextStopGrade  the REAL updated grade (1|2) — ONLY when coached, and
+                             ONLY inside the coach bundle (present-iff-coached), so a
+                             nominal poll carries NO grade value to diff. Mirrors the
+                             signin disguise boundary exactly.
+
+    A NOMINAL session's poll has no `coach` key — identical disguise contract as
+    build_session_payload. assert_disguise_safe re-checks the top-level forbidden set.
+    """
+    payload: dict = {
+        "route": {"nextStop": build_next_stop(next_stop, route_cluster_id)},
+        "phase": phase,
+    }
+    if shift_phase is not None:
+        payload["shiftPhase"] = shift_phase
+    if route_count is not None:
+        payload["routeCount"] = route_count
+    if coached:
+        grade = _DEFAULT_GRADE
+        if next_stop and isinstance(next_stop.get("grade"), int) and next_stop["grade"] in (1, 2):
+            grade = next_stop["grade"]
+        # grade rides INSIDE the coach bundle (present-iff-coached), never top level.
+        payload["coach"] = {"nextStopGrade": grade}
+    assert_disguise_safe(payload)
+    return payload

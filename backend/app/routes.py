@@ -168,6 +168,55 @@ def grade_signals(
     )
 
 
+def ordered_stops_for_route(cur, route_cluster_id: int, dow: str) -> list[dict]:
+    """Every planned stop for a route-day, in order, joined to coordinates.
+    READ-ONLY. Used by the live route feed to follow the truck's progression."""
+    cur.execute(
+        """
+        SELECT rts.stop_order, rts.stop_cluster_id, rts.arrive, rts.leave_by,
+               rts.address, sc.centroid_lat, sc.centroid_long,
+               rts.exp_per_visit, rts.visits
+        FROM public.route_timed_stops rts
+        LEFT JOIN public.stop_clusters sc
+               ON sc.stop_cluster_id = rts.stop_cluster_id
+        WHERE rts.route_cluster_id = %s AND lower(rts.dow) = lower(%s)
+        ORDER BY rts.stop_order
+        """,
+        (route_cluster_id, dow),
+    )
+    out = []
+    for row in cur.fetchall():
+        order, stop_cluster_id, arrive, leave_by, address, lat, lng, exp_per_visit, visits = row
+        out.append(
+            {
+                "stop_order": int(order),
+                "stop_cluster_id": int(stop_cluster_id) if stop_cluster_id is not None else None,
+                "arrive": arrive,
+                "leave_by": leave_by,
+                "address": address,
+                "lat": float(lat) if lat is not None else None,
+                "lng": float(lng) if lng is not None else None,
+                "exp_per_visit": float(exp_per_visit) if exp_per_visit is not None else None,
+                "visits": int(visits) if visits is not None else None,
+            }
+        )
+    return out
+
+
+def _grade_stop(cur, stop: dict, route_cluster_id: int, dow: str) -> dict:
+    """Attach the REAL Master Route grade (1|2 + reason) to a resolved stop."""
+    bench = route_benchmark(cur, route_cluster_id, dow)
+    result = grade_signals(
+        exp_per_visit=stop.get("exp_per_visit"),
+        visits=stop.get("visits"),
+        route_mean=bench["route_mean"],
+        global_mean=bench["global_mean"],
+    )
+    stop["grade"] = result.grade
+    stop["grade_reason"] = result.reason
+    return stop
+
+
 def resolve_next_stop(
     cur, truck_no: int, dow: Optional[str] = None, after_order: int = 0
 ) -> dict:
@@ -194,3 +243,92 @@ def resolve_next_stop(
         stop["grade"] = result.grade
         stop["grade_reason"] = result.reason
     return {"dow": dow, "route_cluster_id": route_id, "next_stop": stop}
+
+
+def resolve_live_route(
+    cur,
+    truck_no: int,
+    route_cluster_id: Optional[int] = None,
+    dow: Optional[str] = None,
+) -> dict:
+    """Follow the truck along its ordered route and return its CURRENT state.
+
+    This is the live-poll counterpart to resolve_next_stop: instead of always the
+    first stop, it uses the truck's latest Geotab position to pick the nearest
+    ordered stop it is heading to (or serving), grades that stop, and computes the
+    live motion phase from Geotab speed + distance-to-that-stop. It also derives
+    the §11 shift phase and the plan-strip route count from real route progress.
+
+    Nearest-stop is the defensible progression signal here: there is no per-stop
+    served flag, so the stop the truck is closest to is the one it is arriving at /
+    parked at, and the next stop becomes nearest as it rolls. As the truck moves,
+    the returned next-stop + phase advance on their own — no fabricated queue.
+
+    Returns:
+      { dow, route_cluster_id, next_stop (graded 1|2), phase, shift_phase,
+        route_count ("N / M" | None), total_stops }
+
+    READ-ONLY against public. Never raises for missing data: no route / no position
+    degrade to safe defaults (first stop / hold DRIVING) so the caller never crashes.
+    """
+    # Import here to avoid any import-order coupling at module load; both are
+    # READ-ONLY wiring layers over the same reference cores.
+    from . import geotab, motion
+    from .refcore import DRIVING
+
+    dow = dow or dow_name()
+    route_id = route_cluster_id if route_cluster_id is not None else route_for_truck_dow(cur, truck_no, dow)
+    if route_id is None:
+        return {
+            "dow": dow, "route_cluster_id": None, "next_stop": None,
+            "phase": DRIVING, "shift_phase": "plan", "route_count": None, "total_stops": 0,
+        }
+
+    stops = ordered_stops_for_route(cur, route_id, dow)
+    total = len(stops)
+    if total == 0:
+        return {
+            "dow": dow, "route_cluster_id": route_id, "next_stop": None,
+            "phase": DRIVING, "shift_phase": "plan", "route_count": None, "total_stops": 0,
+        }
+
+    truck_id = truck_id_for(cur, truck_no)
+    position = geotab.latest_position(cur, truck_id) if truck_id else None
+
+    # Pick the current stop: nearest ordered stop to the live position; fall back to
+    # the first stop when we have no position (fresh sign-in / no pings).
+    idx = 0
+    if position is not None:
+        best_d = None
+        for i, s in enumerate(stops):
+            if s.get("lat") is None or s.get("lng") is None:
+                continue
+            d = geotab.haversine_m(position["lat"], position["lng"], s["lat"], s["lng"])
+            if best_d is None or d < best_d:
+                best_d, idx = d, i
+    stop = dict(stops[idx])
+    _grade_stop(cur, stop, route_id, dow)
+
+    # Live motion phase from Geotab against THIS stop (server owns the phase).
+    phase = DRIVING
+    if truck_id:
+        fix = geotab.latest_fix(cur, truck_id, stop.get("lat"), stop.get("lng"))
+        phase = motion.phase_for_fix(fix, prior_phase=DRIVING)
+
+    # §11 shift phase from real route position: heading in (wrap) once the truck is
+    # settled at the final ordered stop; otherwise plan. 'tail' (post-plan extension
+    # stops) needs an extension-queue signal we do not have, so we never fake it.
+    shift_phase = "wrap" if (idx == total - 1 and phase == "parked") else "plan"
+
+    # Plan-strip count = 1-based position through the ordered stops.
+    route_count = f"{idx + 1} / {total}"
+
+    return {
+        "dow": dow,
+        "route_cluster_id": route_id,
+        "next_stop": stop,
+        "phase": phase,
+        "shift_phase": shift_phase,
+        "route_count": route_count,
+        "total_stops": total,
+    }
