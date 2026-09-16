@@ -25,6 +25,7 @@ import datetime
 from typing import Optional
 
 from . import grade as _grade
+from .payload import friendly_stop_name
 
 _DOW = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
@@ -411,7 +412,9 @@ def resolve_live_route(
         addr = s.get("address")
         up_next.append(
             {
-                "name": (addr.split(",")[0].strip() if addr else None) or "Next stop",
+                # friendly NAME = STREET (not house numbers), same helper as nextStop
+                # so a multi-unit cluster never ships a ';'-joined number string.
+                "name": friendly_stop_name(addr) or "Next stop",
                 "arrive": s.get("arrive"),   # BOOKED schedule time (client formats AM/PM)
             }
         )

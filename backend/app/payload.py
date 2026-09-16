@@ -111,6 +111,75 @@ def _coach_bundle(arrival_voice: bool, next_stop_grade: int) -> dict:
     return bundle
 
 
+# Human-facing stop NAME cap. The friendly name is the STREET, not the house
+# number(s) — a multi-unit cluster's first address segment is a grotesque ';'-joined
+# list ('2601;2603;...;2651'), which must never reach the cab screen. Names are
+# capped (ellipsis included) so nothing over ~this length or carrying ';' ships.
+_NAME_MAX = 28
+
+
+def _cap_name(s: str) -> str:
+    """Trim a name to _NAME_MAX chars (ellipsis counted), never mid-run of spaces."""
+    if len(s) > _NAME_MAX:
+        return s[: _NAME_MAX - 1].rstrip() + "\u2026"
+    return s
+
+
+def _looks_like_house_numbers(seg: str) -> bool:
+    """True iff `seg` is ONLY house number(s): a single number, or a ';'-joined list of
+    numbers (a multi-unit cluster like '2601;2603;...;2651'), each optionally carrying a
+    unit letter/dash suffix ('12A', '12-14'). This is what distinguishes a raw house-
+    number first segment (hide it, show the street) from a real landmark first segment
+    like 'Lincoln Elementary' (keep it). Empty -> False."""
+    seg = seg.strip()
+    if not seg:
+        return False
+    for part in seg.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if not part[0].isdigit():
+            return False
+        if not all(c.isdigit() or c.isalpha() or c == "-" for c in part):
+            return False
+    return True
+
+
+def friendly_stop_name(address: Optional[str]) -> Optional[str]:
+    """The human-facing stop NAME derived from a full address string.
+
+    Master-Route addresses are '<house#(s)>, <street>, <city>, …'. When the 1st segment
+    is the house number(s) — which for a multi-unit cluster is a grotesque ';'-joined
+    list ('2601;2603;...;2651') that must NEVER render as a stop name — the friendly name
+    is the STREET (the 2nd comma-segment): 'Panama Street', 'Barrington Court', 'Corsair
+    Boulevard'. When the 1st segment is a real landmark name ('Lincoln Elementary') it is
+    kept as-is rather than replaced by the street.
+
+    Falls back to the 1st segment only when there is no real 2nd segment, and even then
+    never emits a ';'-joined number string: a ';'-bearing first segment collapses to
+    'first-number …'. Every result is capped at _NAME_MAX chars. Returns None only for an
+    empty address (callers substitute 'Next stop'). `sub`/full address is kept by the
+    caller — this is a pure formatting helper.
+    """
+    if not address:
+        return None
+    segments = [seg.strip() for seg in str(address).split(",")]
+    first = segments[0] if segments else ""
+    street = segments[1] if len(segments) >= 2 else ""
+    # The street (2nd segment) wins only when the 1st segment is a raw house number —
+    # otherwise a landmark first segment ('Lincoln Elementary') is the real name.
+    if _looks_like_house_numbers(first) and street:
+        return _cap_name(street) or None
+    if first:
+        # NEVER emit a ';'-joined house-number string as a name.
+        if ";" in first:
+            first = first.split(";")[0].strip() + "\u2026"
+        return _cap_name(first) or None
+    if street:
+        return _cap_name(street) or None
+    return None
+
+
 def _live_eta_fields(live_eta: Optional[dict]) -> dict:
     """Normalize a live-ETA dict into the camelCase wire fields, or {} when there is
     no usable ETA. Accepts either the eta.py shape ({eta_min,dist_mi,arrive_est}) or a
@@ -147,11 +216,9 @@ def build_next_stop(
     """
     if not stop:
         return None
-    name = None
     addr = stop.get("address")
-    if addr:
-        # first address segment as a friendly stop name; keep sub = full-ish address
-        name = addr.split(",")[0].strip() or None
+    # friendly stop NAME = the STREET (not house numbers); sub keeps the full address.
+    name = friendly_stop_name(addr)
     # live_eta param wins; otherwise derive it from the stop's own eta_* keys.
     eta_src = live_eta if live_eta is not None else stop
     ns = {
