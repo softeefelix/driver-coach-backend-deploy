@@ -36,6 +36,10 @@ _DOW = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sun
 GEM_MAX_VISITS = 8
 GEM_RATE_MULT = 1.5
 
+# How many upcoming stops the live route feed ships for the "Up next" list. The
+# client paints these REAL forward stops (or hides the list) — never a fake queue.
+UP_NEXT_MAX = 4
+
 
 def dow_name(d: Optional[datetime.date] = None) -> str:
     return _DOW[(d or datetime.date.today()).weekday()]
@@ -50,19 +54,43 @@ def truck_id_for(cur, truck_no: int) -> Optional[str]:
 
 
 def route_for_truck_dow(cur, truck_no: int, dow: str) -> Optional[int]:
-    """The route_cluster_id this truck most recently ran on `dow` (real signal
-    from active_sale_stops). None if the truck has no ranked route for that day."""
+    """The route_cluster_id this truck runs on `dow` that resolves to a REAL day.
+
+    BUG FIX (Felix road-test, Emery/13): the old picker ordered the truck's
+    active_sale_stops clusters by `max(created_at)` (most-recently-seen) and took
+    the top one. On truck 13 Wednesday that landed on a cluster whose
+    `route_timed_stops(dow)` was nearly empty — the app resolved a 1-stop route
+    while the truck's real 24-stop Wednesday (cluster 1955) was ignored.
+
+    The fix ranks the truck's candidate clusters by how many ORDERED TIMED STOPS
+    each actually has for this dow (the real signal for "which route is a full
+    day"), and picks the fullest. Ties break on recency then active-stop volume so
+    a genuine multi-cluster day is still deterministic. A cluster with zero timed
+    stops for the dow can never be chosen over one with a real ordered day.
+
+    Returns None only when the truck has NO cluster with any timed stop for `dow`.
+    READ-ONLY against public.
+    """
     cur.execute(
         """
-        SELECT route_cluster_id
-        FROM public.active_sale_stops
-        WHERE truck_number = %s AND lower(dow) = lower(%s)
-              AND route_cluster_id IS NOT NULL
-        GROUP BY route_cluster_id
-        ORDER BY max(created_at) DESC NULLS LAST, count(*) DESC
+        SELECT ass.route_cluster_id,
+               count(DISTINCT rts.stop_order)  AS timed_stops,
+               max(ass.created_at)             AS last_seen,
+               count(*)                        AS active_rows
+        FROM public.active_sale_stops ass
+        LEFT JOIN public.route_timed_stops rts
+               ON rts.route_cluster_id = ass.route_cluster_id
+              AND lower(rts.dow) = lower(%s)
+        WHERE ass.truck_number = %s AND lower(ass.dow) = lower(%s)
+              AND ass.route_cluster_id IS NOT NULL
+        GROUP BY ass.route_cluster_id
+        HAVING count(DISTINCT rts.stop_order) > 0
+        ORDER BY timed_stops DESC,
+                 last_seen DESC NULLS LAST,
+                 active_rows DESC
         LIMIT 1
         """,
-        (truck_no, dow),
+        (dow, truck_no, dow),
     )
     row = cur.fetchone()
     return int(row[0]) if row else None
@@ -374,6 +402,20 @@ def resolve_live_route(
     # Plan-strip count = 1-based position through the ordered stops.
     route_count = f"{idx + 1} / {total}"
 
+    # REAL "Up next" forward queue: the next few ORDERED stops after the current one
+    # (name + booked time), so the client paints the driver's actual remaining day
+    # instead of a hardcoded demo list (Felix road-test: fake Riverside/Sunset/Harbor).
+    # Empty near the end of the day -> the client HIDES the Up-Next list. Never a fake.
+    up_next = []
+    for s in stops[idx + 1: idx + 1 + UP_NEXT_MAX]:
+        addr = s.get("address")
+        up_next.append(
+            {
+                "name": (addr.split(",")[0].strip() if addr else None) or "Next stop",
+                "arrive": s.get("arrive"),   # BOOKED schedule time (client formats AM/PM)
+            }
+        )
+
     return {
         "dow": dow,
         "route_cluster_id": route_id,
@@ -382,4 +424,5 @@ def resolve_live_route(
         "shift_phase": shift_phase,
         "route_count": route_count,
         "total_stops": total,
+        "up_next": up_next,
     }

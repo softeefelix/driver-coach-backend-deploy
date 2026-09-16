@@ -56,12 +56,15 @@ def _pt_tz():
 
 
 def _fmt_clock_pt(dt_utc: datetime.datetime) -> str:
-    """UTC instant -> a bare 12h 'H:MM' Pacific clock string (no am/pm, no zero-pad
-    on the hour). Manual format (not %-I) so it is portable across libc."""
+    """UTC instant -> a 12h 'H:MM AM/PM' Pacific clock string (no zero-pad on the
+    hour). Manual format (not %-I) so it is portable across libc. AM/PM is REQUIRED
+    (Felix road-test: '20:30' style 24h times are a field bug — cab-facing times are
+    always 12-hour AM/PM, America/Los_Angeles)."""
     tz = _pt_tz()
     local = dt_utc.astimezone(tz) if tz is not None else dt_utc
     hour = local.hour % 12 or 12
-    return f"{hour}:{local.minute:02d}"
+    ampm = "AM" if local.hour < 12 else "PM"
+    return f"{hour}:{local.minute:02d} {ampm}"
 
 
 def _default_fetch(

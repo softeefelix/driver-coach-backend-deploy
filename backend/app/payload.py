@@ -24,6 +24,7 @@ Maker: Forge. Reviewer of record: Warden. Nothing here deploys without Felix.
 """
 from __future__ import annotations
 
+import datetime
 from typing import Optional
 
 from .refcore import ResolvedFlags
@@ -59,6 +60,41 @@ _FORBIDDEN_COACH = ("voice", "arrival_voice", "coached", "grade_reason")
 # Safe default grade when a coached stop has no computed grade (no route / missing
 # MR data): 2 = "needs work"/cultivate. Never fake a 1 ("camp here") on missing data.
 _DEFAULT_GRADE = 2
+
+
+def fmt_clock_ampm(value) -> Optional[str]:
+    """Normalize a BOOKED/leave-by timetable value to a 12-hour 'H:MM AM/PM' string,
+    America/Los_Angeles convention (Felix road-test: cab-facing times are never 24h
+    '20:30'). Accepts a datetime/time, or a string like '20:30' / '8:30 PM'. A value
+    already carrying AM/PM (or that can't be parsed as a clock) is returned unchanged
+    (never mangled); None stays None. No zero-pad on the hour.
+    """
+    if value is None:
+        return None
+    # datetime / time objects -> format directly.
+    if isinstance(value, (datetime.datetime, datetime.time)):
+        hour24, minute = value.hour, value.minute
+    else:
+        s = str(value).strip()
+        if not s:
+            return None
+        up = s.upper()
+        if "AM" in up or "PM" in up:
+            return s  # already 12-hour; leave it exactly as-is
+        # accept "HH:MM[:SS]" (24h). Anything else is returned verbatim.
+        parts = s.split(":")
+        if len(parts) < 2:
+            return s
+        try:
+            hour24 = int(parts[0])
+            minute = int(parts[1])
+        except ValueError:
+            return s
+        if not (0 <= hour24 <= 23 and 0 <= minute <= 59):
+            return s
+    hour = hour24 % 12 or 12
+    ampm = "AM" if hour24 < 12 else "PM"
+    return f"{hour}:{minute:02d} {ampm}"
 
 
 def _coach_bundle(arrival_voice: bool, next_stop_grade: int) -> dict:
@@ -121,8 +157,10 @@ def build_next_stop(
     ns = {
         "name": name or "Next stop",
         "sub": addr,
-        "arrive": stop.get("arrive"),      # BOOKED schedule time (labeled BOOKED on the client)
-        "leaveBy": stop.get("leave_by"),
+        # BOOKED schedule time + leave-by, normalized to 12-hour AM/PM (cab-facing
+        # times are never 24h "20:30"). The client labels `arrive` as BOOKED.
+        "arrive": fmt_clock_ampm(stop.get("arrive")),      # BOOKED schedule time
+        "leaveBy": fmt_clock_ampm(stop.get("leave_by")),
     }
     ns.update(_live_eta_fields(eta_src))   # etaMin/distMi/arriveEst — only when present
     return ns
@@ -194,6 +232,7 @@ def build_route_payload(
     shift_phase: Optional[str] = None,
     route_count: Optional[str] = None,
     live_eta: Optional[dict] = None,
+    up_next: Optional[list] = None,
 ) -> dict:
     """The disguise-safe body for GET /driver-coach/v1/route (the live poll).
 
@@ -222,6 +261,15 @@ def build_route_payload(
         payload["shiftPhase"] = shift_phase
     if route_count is not None:
         payload["routeCount"] = route_count
+    # REAL forward queue for the "Up next" list. Each entry is {name, arrive} with the
+    # booked time normalized to 12-hour AM/PM. Present ONLY when there are real upcoming
+    # stops (empty list omitted) so the client hides the list rather than showing a fake
+    # one. Carries NO coordinates and NO grade — plain human-facing route text, both modes.
+    if up_next:
+        payload["upNext"] = [
+            {"name": s.get("name"), "arrive": fmt_clock_ampm(s.get("arrive"))}
+            for s in up_next
+        ]
     if coached:
         grade = _DEFAULT_GRADE
         if next_stop and isinstance(next_stop.get("grade"), int) and next_stop["grade"] in (1, 2):

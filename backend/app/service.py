@@ -232,6 +232,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 coached=bool(coached),
                 shift_phase=live["shift_phase"],
                 route_count=live["route_count"],
+                up_next=live.get("up_next"),
             )
         # READ-ONLY: nothing to commit.
         conn.rollback()
