@@ -261,7 +261,7 @@ def _attach_live_eta(
     here server-side only and are NEVER shipped (payload.build_next_stop drops lat/lng).
     """
     from . import eta as _eta
-    from . import geotab
+    from . import geotab, geotab_live
 
     stop["eta_min"] = None
     stop["dist_mi"] = None
@@ -273,7 +273,23 @@ def _attach_live_eta(
 
     if position is None:
         truck_id = truck_id_for(cur, truck_no)
-        position = geotab.latest_position(cur, truck_id) if truck_id else None
+
+        # PRIMARY position source: the truck's CURRENT position read LIVE from Geotab
+        # (DeviceStatusInfo), moving-or-parked. FIX (Felix road-test, truck 13/Emery): the
+        # old primary was geotab.latest_position(log_records), which is ~16h stale AND only
+        # records STOPPED trucks (its ingester skips speed>0) — so the app resolved HAYWARD
+        # while the truck was really in SOUTH SAN FRANCISCO. We try live first; on ANY
+        # failure (unconfigured / error / timeout / no fix) live_position returns None and
+        # we FALL BACK to log_records so the mini's local path still works and nothing
+        # crashes. Nearest-stop / phase / ETA logic below is unchanged — it just gets a
+        # fresh position. No coordinates leave the server (payload drops lat/lng).
+        position = None
+        try:
+            position = geotab_live.live_position(truck_no=truck_no, device_id=truck_id, cur=cur)
+        except Exception:
+            position = None  # belt+braces: live_position swallows errors, but never crash the feed
+        if position is None and truck_id:
+            position = geotab.latest_position(cur, truck_id)
     if position is None:
         return stop  # no GPS fix -> graceful null
 
@@ -350,7 +366,7 @@ def resolve_live_route(
     """
     # Import here to avoid any import-order coupling at module load; both are
     # READ-ONLY wiring layers over the same reference cores.
-    from . import geotab, motion
+    from . import geotab, geotab_live, motion
     from .refcore import DRIVING
 
     dow = dow or dow_name()
@@ -370,7 +386,19 @@ def resolve_live_route(
         }
 
     truck_id = truck_id_for(cur, truck_no)
-    position = geotab.latest_position(cur, truck_id) if truck_id else None
+    # PRIMARY position: the truck's CURRENT position from Geotab DeviceStatusInfo
+    # (moving-or-parked, @ now). FALL BACK to log_records (geotab.latest_position)
+    # when Geotab is unconfigured/unreachable/timed-out so nothing crashes and the
+    # mini's local path still works. log_records is ~16h stale AND parked-only, so
+    # the live source is what actually places a moving truck in the right city.
+    position = None
+    if truck_id:
+        try:
+            position = geotab_live.live_position(truck_no=truck_no, device_id=truck_id, cur=cur)
+        except Exception:
+            position = None  # belt+braces: live_position swallows errors, but never crash the feed
+        if position is None:
+            position = geotab.latest_position(cur, truck_id)
 
     # Pick the current stop: nearest ordered stop to the live position; fall back to
     # the first stop when we have no position (fresh sign-in / no pings).

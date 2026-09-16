@@ -5,4 +5,5 @@ uvicorn>=0.27,<1.0
 psycopg2-binary>=2.9,<3.0
 pydantic>=2.5,<3.0
 httpx>=0.27,<1.0      # test client transport
+mygeotab>=0.9,<1.0   # LIVE truck position (DeviceStatusInfo) — geotab_live.py
 pytest>=8.0
