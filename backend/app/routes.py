@@ -41,9 +41,48 @@ GEM_RATE_MULT = 1.5
 # client paints these REAL forward stops (or hides the list) — never a fake queue.
 UP_NEXT_MAX = 4
 
+# Position-first route selection floor (Felix road-test, Emery/13 South SF): among a
+# truck's DOW candidate clusters we pick the one NEAREST the live truck position, but
+# only a cluster carrying at least this many ORDERED TIMED STOPS may win on nearness.
+# This guards the earlier "1 / 1" fix — a near-empty (e.g. 1-stop) cluster that happens
+# to be close can never beat a real day. If NO candidate clears the floor, or there is
+# no live position at all, we fall back to the fullest-day pick (prior behavior).
+MIN_TIMED_STOPS_FOR_POSITION = 5
+
 
 def dow_name(d: Optional[datetime.date] = None) -> str:
     return _DOW[(d or datetime.date.today()).weekday()]
+
+
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Great-circle distance in meters — the same core the motion wiring uses. Lazy
+    import keeps route selection decoupled from geotab's import order (both READ-ONLY)."""
+    from . import geotab
+    return geotab.haversine_m(lat1, lng1, lat2, lng2)
+
+
+def read_truck_position(cur, truck_no: int, truck_id: Optional[str] = None) -> Optional[dict]:
+    """The truck's CURRENT position: LIVE Geotab (DeviceStatusInfo) first, then the
+    stale log_records fallback. Returns {lat,lng,...} or None.
+
+    PRIMARY = live (moving-or-parked, @ now); FALLBACK = geotab.latest_position
+    (log_records, ~16h stale AND parked-only) so the mini's local path still works and
+    nothing crashes. Never raises. Reused by route selection, nearest-stop, and ETA so
+    all three see the SAME position (Felix road-test, truck 13/Emery South SF).
+    """
+    from . import geotab, geotab_live
+
+    if truck_id is None:
+        truck_id = truck_id_for(cur, truck_no)
+    position = None
+    if truck_id:
+        try:
+            position = geotab_live.live_position(truck_no=truck_no, device_id=truck_id, cur=cur)
+        except Exception:
+            position = None  # belt+braces: live_position swallows errors, but never crash the feed
+        if position is None:
+            position = geotab.latest_position(cur, truck_id)
+    return position
 
 
 def truck_id_for(cur, truck_no: int) -> Optional[str]:
@@ -54,23 +93,15 @@ def truck_id_for(cur, truck_no: int) -> Optional[str]:
     return row[0] if row else None
 
 
-def route_for_truck_dow(cur, truck_no: int, dow: str) -> Optional[int]:
-    """The route_cluster_id this truck runs on `dow` that resolves to a REAL day.
+def _candidate_clusters_for_truck_dow(cur, truck_no: int, dow: str) -> list[dict]:
+    """The truck's DOW candidate route-clusters, each with its ordered-timed-stop
+    count, recency, active-row volume, AND every timed stop's centroid coordinates.
 
-    BUG FIX (Felix road-test, Emery/13): the old picker ordered the truck's
-    active_sale_stops clusters by `max(created_at)` (most-recently-seen) and took
-    the top one. On truck 13 Wednesday that landed on a cluster whose
-    `route_timed_stops(dow)` was nearly empty — the app resolved a 1-stop route
-    while the truck's real 24-stop Wednesday (cluster 1955) was ignored.
-
-    The fix ranks the truck's candidate clusters by how many ORDERED TIMED STOPS
-    each actually has for this dow (the real signal for "which route is a full
-    day"), and picks the fullest. Ties break on recency then active-stop volume so
-    a genuine multi-cluster day is still deterministic. A cluster with zero timed
-    stops for the dow can never be chosen over one with a real ordered day.
-
-    Returns None only when the truck has NO cluster with any timed stop for `dow`.
-    READ-ONLY against public.
+    One row per candidate cluster:
+      {route_cluster_id, timed_stops, last_seen, active_rows, coords:[(lat,lng),...]}
+    Only clusters with >=1 ordered timed stop for `dow` are returned (a cluster with
+    zero timed stops is never a real day). Ordered fullest-first so the first element
+    is the current fullest-day pick. READ-ONLY against public.
     """
     cur.execute(
         """
@@ -89,12 +120,93 @@ def route_for_truck_dow(cur, truck_no: int, dow: str) -> Optional[int]:
         ORDER BY timed_stops DESC,
                  last_seen DESC NULLS LAST,
                  active_rows DESC
-        LIMIT 1
         """,
         (dow, truck_no, dow),
     )
-    row = cur.fetchone()
-    return int(row[0]) if row else None
+    candidates = []
+    for route_cluster_id, timed_stops, last_seen, active_rows in cur.fetchall():
+        candidates.append(
+            {
+                "route_cluster_id": int(route_cluster_id),
+                "timed_stops": int(timed_stops),
+                "last_seen": last_seen,
+                "active_rows": int(active_rows),
+                "coords": [],
+            }
+        )
+    if not candidates:
+        return candidates
+
+    # Pull the stop centroids for every candidate cluster in ONE query, then bucket
+    # by cluster. Only clusters resolved above are queried (no unrelated routes).
+    ids = tuple(c["route_cluster_id"] for c in candidates)
+    cur.execute(
+        """
+        SELECT rts.route_cluster_id, sc.centroid_lat, sc.centroid_long
+        FROM public.route_timed_stops rts
+        LEFT JOIN public.stop_clusters sc
+               ON sc.stop_cluster_id = rts.stop_cluster_id
+        WHERE rts.route_cluster_id IN %s AND lower(rts.dow) = lower(%s)
+        """,
+        (ids, dow),
+    )
+    by_id = {c["route_cluster_id"]: c for c in candidates}
+    for route_cluster_id, lat, lng in cur.fetchall():
+        if lat is None or lng is None:
+            continue
+        by_id[int(route_cluster_id)]["coords"].append((float(lat), float(lng)))
+    return candidates
+
+
+def route_for_truck_dow(
+    cur, truck_no: int, dow: str, position: Optional[dict] = None
+) -> Optional[int]:
+    """The route_cluster_id this truck runs on `dow` that resolves to a REAL day.
+
+    POSITION-FIRST (Felix road-test, Emery/13 South SF): among the truck's candidate
+    clusters for this dow, pick the one whose stops are NEAREST the truck's LIVE
+    position (min haversine truck -> any stop centroid), so the app follows the route
+    the truck is actually on — not just the fullest one 24 mi away. Only a cluster
+    with a REAL day (>= MIN_TIMED_STOPS_FOR_POSITION ordered timed stops) may win on
+    nearness, so a near-empty cluster that happens to be close can never beat a real
+    day (this guards the earlier "1 / 1" fix). Nearness ties break on stop-count then
+    recency for determinism.
+
+    FALLBACK (unchanged prior behavior): when there is NO live position, or no
+    candidate clears the timed-stop floor, or none has usable centroids, pick the
+    FULLEST day — the truck's candidate cluster with the MOST ordered timed stops
+    (ties on recency then active-stop volume). A cluster with zero timed stops for the
+    dow can never be chosen over one with a real ordered day.
+
+    Returns None only when the truck has NO cluster with any timed stop for `dow`.
+    READ-ONLY against public.
+    """
+    candidates = _candidate_clusters_for_truck_dow(cur, truck_no, dow)
+    if not candidates:
+        return None
+
+    # candidates are already ordered fullest-first -> element 0 is the fullest-day pick.
+    fullest = candidates[0]["route_cluster_id"]
+
+    # No live position -> keep the fullest-day behavior (nothing to be near).
+    if not position or position.get("lat") is None or position.get("lng") is None:
+        return fullest
+
+    plat, plng = float(position["lat"]), float(position["lng"])
+    best_id = None
+    best_d = None
+    for c in candidates:
+        # Only a REAL day may win on nearness (guards the near-empty "1 / 1" cluster).
+        if c["timed_stops"] < MIN_TIMED_STOPS_FOR_POSITION or not c["coords"]:
+            continue
+        d = min(_haversine_m(plat, plng, lat, lng) for lat, lng in c["coords"])
+        # candidates iterate fullest-first, so a strict `<` makes the FULLER cluster
+        # win an exact distance tie (deterministic tie-break: nearness, then stops).
+        if best_d is None or d < best_d:
+            best_d, best_id = d, c["route_cluster_id"]
+
+    # No qualifying cluster near the truck -> fall back to the fullest day.
+    return best_id if best_id is not None else fullest
 
 
 def next_stop_for_route(
@@ -319,7 +431,11 @@ def resolve_next_stop(
     READ-ONLY against public: the grade is computed from SELECTs over
     route_timed_stops (rate, visits, means) at sign-in — no new column, no write."""
     dow = dow or dow_name()
-    route_id = route_for_truck_dow(cur, truck_no, dow)
+    # Read the truck's position ONCE (live -> log_records fallback) so route selection,
+    # nearest-stop, and ETA all agree. Position-first route selection: pick the DOW
+    # cluster NEAREST the live truck, not just the fullest one 24 mi away (Emery/13).
+    position = read_truck_position(cur, truck_no)
+    route_id = route_for_truck_dow(cur, truck_no, dow, position=position)
     if route_id is None:
         return {"dow": dow, "route_cluster_id": None, "next_stop": None}
     stop = next_stop_for_route(cur, route_id, dow, after_order=after_order)
@@ -334,7 +450,8 @@ def resolve_next_stop(
         stop["grade"] = result.grade
         stop["grade_reason"] = result.reason
         # traffic-aware live ETA on the BASE stop (both modes identical, no coords out).
-        _attach_live_eta(cur, stop, truck_no)
+        # Reuse the position we already read — no duplicate Geotab call.
+        _attach_live_eta(cur, stop, truck_no, position=position)
     return {"dow": dow, "route_cluster_id": route_id, "next_stop": stop}
 
 
@@ -370,7 +487,22 @@ def resolve_live_route(
     from .refcore import DRIVING
 
     dow = dow or dow_name()
-    route_id = route_cluster_id if route_cluster_id is not None else route_for_truck_dow(cur, truck_no, dow)
+
+    truck_id = truck_id_for(cur, truck_no)
+    # PRIMARY position: the truck's CURRENT position from Geotab DeviceStatusInfo
+    # (moving-or-parked, @ now). FALL BACK to log_records (geotab.latest_position)
+    # when Geotab is unconfigured/unreachable/timed-out so nothing crashes and the
+    # mini's local path still works. log_records is ~16h stale AND parked-only, so
+    # the live source is what actually places a moving truck in the right city.
+    # Read ONCE, up front, so route selection AND nearest-stop see the same position.
+    position = read_truck_position(cur, truck_no, truck_id=truck_id)
+
+    # Follow the caller's cluster when given (the session's stored route, itself picked
+    # position-first at sign-in); otherwise select position-first here too, so a
+    # cluster-less live poll picks the DOW route NEAREST the truck, not the fullest.
+    route_id = route_cluster_id if route_cluster_id is not None else route_for_truck_dow(
+        cur, truck_no, dow, position=position
+    )
     if route_id is None:
         return {
             "dow": dow, "route_cluster_id": None, "next_stop": None,
@@ -384,21 +516,6 @@ def resolve_live_route(
             "dow": dow, "route_cluster_id": route_id, "next_stop": None,
             "phase": DRIVING, "shift_phase": "plan", "route_count": None, "total_stops": 0,
         }
-
-    truck_id = truck_id_for(cur, truck_no)
-    # PRIMARY position: the truck's CURRENT position from Geotab DeviceStatusInfo
-    # (moving-or-parked, @ now). FALL BACK to log_records (geotab.latest_position)
-    # when Geotab is unconfigured/unreachable/timed-out so nothing crashes and the
-    # mini's local path still works. log_records is ~16h stale AND parked-only, so
-    # the live source is what actually places a moving truck in the right city.
-    position = None
-    if truck_id:
-        try:
-            position = geotab_live.live_position(truck_no=truck_no, device_id=truck_id, cur=cur)
-        except Exception:
-            position = None  # belt+braces: live_position swallows errors, but never crash the feed
-        if position is None:
-            position = geotab.latest_position(cur, truck_id)
 
     # Pick the current stop: nearest ordered stop to the live position; fall back to
     # the first stop when we have no position (fresh sign-in / no pings).
