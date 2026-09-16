@@ -63,3 +63,15 @@ def flag_config() -> FlagConfig:
 def liveness_config() -> dict:
     """Liveness/turn-off timing constants (turn-off spec §7), from thresholds.json."""
     return dict(load_thresholds()["liveness"])
+
+
+def mapbox_token() -> str:
+    """The Mapbox access token for the traffic-aware ETA service (eta.py).
+
+    Read from the environment (`MAPBOX_TOKEN`) — NEVER hard-coded, never committed.
+    Felipe sets it on the Render service env (brief §B); the fleet's working token
+    lives in ~/.hermes/secrets/mapbox.env for local build/test. An unset/blank token
+    means the ETA service degrades gracefully to null (the client shows "—"), so this
+    returns "" rather than raising — a missing token must never crash the route feed.
+    """
+    return (os.environ.get("MAPBOX_TOKEN") or "").strip()

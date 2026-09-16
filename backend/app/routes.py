@@ -217,6 +217,52 @@ def _grade_stop(cur, stop: dict, route_cluster_id: int, dow: str) -> dict:
     return stop
 
 
+def _attach_live_eta(
+    cur, stop: dict, truck_no: int, position: Optional[dict] = None
+) -> dict:
+    """Attach the traffic-aware live ETA (eta_min / dist_mi / arrive_est) to a stop.
+
+    Reads the truck's latest Geotab position (unless `position` is supplied to avoid a
+    duplicate query) and the stop's centroid coords, then calls the Mapbox ETA service.
+    Any missing input / Mapbox failure leaves the three keys as None — the payload maps
+    None straight through and the client renders "—", NEVER a stale or fake number.
+
+    These are OPERATIONAL nav facts (like the old drive/arrive slots): they ride on the
+    BASE stop, shown to coached and nominal drivers identically. Coordinates are used
+    here server-side only and are NEVER shipped (payload.build_next_stop drops lat/lng).
+    """
+    from . import eta as _eta
+    from . import geotab
+
+    stop["eta_min"] = None
+    stop["dist_mi"] = None
+    stop["arrive_est"] = None
+
+    stop_lat, stop_lng = stop.get("lat"), stop.get("lng")
+    if stop_lat is None or stop_lng is None:
+        return stop  # no stop coords -> graceful null (client shows "—")
+
+    if position is None:
+        truck_id = truck_id_for(cur, truck_no)
+        position = geotab.latest_position(cur, truck_id) if truck_id else None
+    if position is None:
+        return stop  # no GPS fix -> graceful null
+
+    result = _eta.live_eta(
+        truck_no,
+        stop.get("stop_cluster_id"),
+        position.get("lat"),
+        position.get("lng"),
+        stop_lat,
+        stop_lng,
+    )
+    if result is not None:
+        stop["eta_min"] = result["eta_min"]
+        stop["dist_mi"] = result["dist_mi"]
+        stop["arrive_est"] = result["arrive_est"]
+    return stop
+
+
 def resolve_next_stop(
     cur, truck_no: int, dow: Optional[str] = None, after_order: int = 0
 ) -> dict:
@@ -242,6 +288,8 @@ def resolve_next_stop(
         )
         stop["grade"] = result.grade
         stop["grade_reason"] = result.reason
+        # traffic-aware live ETA on the BASE stop (both modes identical, no coords out).
+        _attach_live_eta(cur, stop, truck_no)
     return {"dow": dow, "route_cluster_id": route_id, "next_stop": stop}
 
 
@@ -308,6 +356,9 @@ def resolve_live_route(
                 best_d, idx = d, i
     stop = dict(stops[idx])
     _grade_stop(cur, stop, route_id, dow)
+    # traffic-aware live ETA on the BASE stop — reuse the position we already read
+    # (both modes identical; graceful null on no-GPS/timeout/error; no coords on wire).
+    _attach_live_eta(cur, stop, truck_no, position=position)
 
     # Live motion phase from Geotab against THIS stop (server owns the phase).
     phase = DRIVING

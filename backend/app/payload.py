@@ -75,11 +75,40 @@ def _coach_bundle(arrival_voice: bool, next_stop_grade: int) -> dict:
     return bundle
 
 
-def build_next_stop(stop: Optional[dict], route_cluster_id: Optional[int]) -> Optional[dict]:
+def _live_eta_fields(live_eta: Optional[dict]) -> dict:
+    """Normalize a live-ETA dict into the camelCase wire fields, or {} when there is
+    no usable ETA. Accepts either the eta.py shape ({eta_min,dist_mi,arrive_est}) or a
+    stop-carried shape (same keys). Missing/None -> {} so the client shows "—", never a
+    stale/fake number. All three must be present together or none ship."""
+    if not isinstance(live_eta, dict):
+        return {}
+    eta_min = live_eta.get("eta_min")
+    dist_mi = live_eta.get("dist_mi")
+    arrive_est = live_eta.get("arrive_est")
+    if eta_min is None or dist_mi is None or arrive_est is None:
+        return {}
+    return {"etaMin": eta_min, "distMi": dist_mi, "arriveEst": arrive_est}
+
+
+def build_next_stop(
+    stop: Optional[dict],
+    route_cluster_id: Optional[int],
+    live_eta: Optional[dict] = None,
+) -> Optional[dict]:
     """Map a resolved route next-stop to the client route.nextStop shape.
     Coordinates are NOT shipped to the client (disguise: the app carries no lat/lng
     for the truck; the motion phase is computed server-side). Only human-facing
-    route text goes on the wire."""
+    route text goes on the wire.
+
+    `arrive`/`leaveBy` are BOOKED timetable values (route_timed_stops.arrive) — the
+    client labels them BOOKED so a schedule time never masquerades as an ETA. The
+    LIVE traffic-aware fields are separate and OPTIONAL: `etaMin` (minutes) + `distMi`
+    (miles) form the "8 min · 2.3 mi" drive line, and `arriveEst` ("H:MM" Pacific) is
+    the est-arrival distinct from BOOKED. `live_eta` may be passed explicitly, else it
+    is read off the stop (routes._attach_live_eta sets eta_min/dist_mi/arrive_est). When
+    there is no live ETA the three keys are OMITTED ENTIRELY (client shows "—"), never a
+    stale or fake number. These are operational nav facts on the BASE stop, both modes.
+    """
     if not stop:
         return None
     name = None
@@ -87,12 +116,16 @@ def build_next_stop(stop: Optional[dict], route_cluster_id: Optional[int]) -> Op
     if addr:
         # first address segment as a friendly stop name; keep sub = full-ish address
         name = addr.split(",")[0].strip() or None
-    return {
+    # live_eta param wins; otherwise derive it from the stop's own eta_* keys.
+    eta_src = live_eta if live_eta is not None else stop
+    ns = {
         "name": name or "Next stop",
         "sub": addr,
-        "arrive": stop.get("arrive"),
+        "arrive": stop.get("arrive"),      # BOOKED schedule time (labeled BOOKED on the client)
         "leaveBy": stop.get("leave_by"),
     }
+    ns.update(_live_eta_fields(eta_src))   # etaMin/distMi/arriveEst — only when present
+    return ns
 
 
 def assert_disguise_safe(payload: dict) -> bool:
@@ -122,18 +155,20 @@ def build_session_payload(
     next_stop: Optional[dict],
     route_cluster_id: Optional[int],
     phase: Optional[str] = None,
+    live_eta: Optional[dict] = None,
 ) -> dict:
     """Assemble the disguise-safe session payload the client consumes.
 
     `flags.coached` / `flags.arrival_voice` are the SERVER decision (never shipped
     as booleans) — they only gate whether the coach bundle / arrivalCue asset is
     PRESENT. `phase` is the server-computed motion phase (info the shell may seed
-    the layout with); it is layout state, not a coaching flag.
+    the layout with); it is layout state, not a coaching flag. `live_eta` is the
+    traffic-aware ETA on the BASE nextStop (defaults to whatever the stop carries).
     """
     payload = {
         "driver": {"id": driver_id, "name": driver_name},
         "truck": truck_no,
-        "route": {"nextStop": build_next_stop(next_stop, route_cluster_id)},
+        "route": {"nextStop": build_next_stop(next_stop, route_cluster_id, live_eta)},
     }
     if phase is not None:
         payload["phase"] = phase
@@ -158,11 +193,16 @@ def build_route_payload(
     coached: bool,
     shift_phase: Optional[str] = None,
     route_count: Optional[str] = None,
+    live_eta: Optional[dict] = None,
 ) -> dict:
     """The disguise-safe body for GET /driver-coach/v1/route (the live poll).
 
     Ships the CURRENT route state the client re-renders each tick:
-      - route.nextStop  (no coordinates on the wire — disguise, like signin)
+      - route.nextStop  (no coordinates on the wire — disguise, like signin). Carries
+                         the LIVE traffic-aware ETA (etaMin/distMi/arriveEst) on the
+                         BASE stop when `live_eta` (or the stop's own eta_* keys) has
+                         one — an OPERATIONAL nav fact, identical in both modes; ABSENT
+                         when there is no ETA so the client shows "—", never a fake.
       - phase           the server-computed live motion phase (driving/arriving/parked)
       - shiftPhase      §11 shift phase (plan/tail/wrap) — layout state, not a flag
       - routeCount      the plan-strip "N / M" count (or absent)
@@ -175,7 +215,7 @@ def build_route_payload(
     build_session_payload. assert_disguise_safe re-checks the top-level forbidden set.
     """
     payload: dict = {
-        "route": {"nextStop": build_next_stop(next_stop, route_cluster_id)},
+        "route": {"nextStop": build_next_stop(next_stop, route_cluster_id, live_eta)},
         "phase": phase,
     }
     if shift_phase is not None:
