@@ -57,6 +57,15 @@ _FORBIDDEN_TOP = ("coached", "nominal", "grade", "nextStopGrade")
 # tag is server-side only and is NEVER spoken or shown to a driver.
 _FORBIDDEN_COACH = ("voice", "arrival_voice", "coached", "grade_reason")
 
+# DISGUISE RULE CHANGE (LIVE MAP brief §2, deliberate + scoped): the "no coordinates
+# on the wire" rule existed to hide grade/coached status. The live nav MAP is shown
+# IDENTICALLY to every driver (pure navigation), so its coordinates leak NO coaching.
+# Coordinates ARE therefore allowed inside the `map` (and `route` nav) object — the
+# `map` object must be byte-identical between a coached and a nominal sign-in for the
+# same truck. The grade/coached/voice keys above stay forbidden everywhere, and grade
+# still rides ONLY in the coach bundle. `map` carries none of the forbidden keys.
+_MAP_ALLOWED_KEYS = ("truck", "line", "stops")
+
 # Safe default grade when a coached stop has no computed grade (no route / missing
 # MR data): 2 = "needs work"/cultivate. Never fake a 1 ("camp here") on missing data.
 _DEFAULT_GRADE = 2
@@ -234,7 +243,13 @@ def build_next_stop(
 
 
 def assert_disguise_safe(payload: dict) -> bool:
-    """Server-side mirror of session.js assertDisguiseSafe. Raises on any leak."""
+    """Server-side mirror of session.js assertDisguiseSafe. Raises on any leak.
+
+    The `map` nav object is ALLOWED to carry coordinates (LIVE MAP brief §2) — it is
+    pure navigation shown identically to every driver — but it must carry NONE of the
+    forbidden grade/coached/voice keys, so a coached and a nominal map for the same
+    truck are byte-identical.
+    """
     if not isinstance(payload, dict):
         raise ValueError("disguise: payload must be an object")
     for k in _FORBIDDEN_TOP:
@@ -248,6 +263,14 @@ def assert_disguise_safe(payload: dict) -> bool:
             if k in coach:
                 raise ValueError(
                     f"disguise violation: coach bundle must not carry a '{k}' boolean"
+                )
+    # The map nav object may carry coords, but never a grade/coached/voice key.
+    nav = payload.get("map")
+    if isinstance(nav, dict):
+        for k in _FORBIDDEN_TOP + _FORBIDDEN_COACH:
+            if k in nav:
+                raise ValueError(
+                    f"disguise violation: map nav object must not carry a '{k}' key"
                 )
     return True
 
@@ -300,6 +323,8 @@ def build_route_payload(
     route_count: Optional[str] = None,
     live_eta: Optional[dict] = None,
     up_next: Optional[list] = None,
+    map_nav: Optional[dict] = None,
+    mapbox_token: Optional[str] = None,
 ) -> dict:
     """The disguise-safe body for GET /driver-coach/v1/route (the live poll).
 
@@ -312,13 +337,21 @@ def build_route_payload(
       - phase           the server-computed live motion phase (driving/arriving/parked)
       - shiftPhase      §11 shift phase (plan/tail/wrap) — layout state, not a flag
       - routeCount      the plan-strip "N / M" count (or absent)
+      - map             LIVE MAP nav object {truck, line?, stops} — pure navigation,
+                        byte-IDENTICAL in both modes (the disguise rule change). It MAY
+                        carry coordinates (it needs them to draw), but never a grade/
+                        coached/voice key. Absent when there is no live position (client
+                        falls back to the simple view).
+      - mapboxToken     the PUBLIC (pk.) Mapbox token the client's Mapbox GL JS map
+                        inits with — fine to expose; absent/omitted when unset.
       - coach.nextStopGrade  the REAL updated grade (1|2) — ONLY when coached, and
                              ONLY inside the coach bundle (present-iff-coached), so a
                              nominal poll carries NO grade value to diff. Mirrors the
                              signin disguise boundary exactly.
 
     A NOMINAL session's poll has no `coach` key — identical disguise contract as
-    build_session_payload. assert_disguise_safe re-checks the top-level forbidden set.
+    build_session_payload. assert_disguise_safe re-checks the top-level forbidden set
+    AND that the `map` object carries none of the forbidden keys.
     """
     payload: dict = {
         "route": {"nextStop": build_next_stop(next_stop, route_cluster_id, live_eta)},
@@ -337,6 +370,16 @@ def build_route_payload(
             {"name": s.get("name"), "arrive": fmt_clock_ampm(s.get("arrive"))}
             for s in up_next
         ]
+    # LIVE MAP nav object — pure navigation, byte-identical both modes. Present ONLY
+    # when the server built one (there is a live truck position); absent -> the client
+    # falls back to the simple next-stop focal. It may carry coordinates but NEVER a
+    # grade/coached/voice key (assert_disguise_safe re-checks this below).
+    if map_nav:
+        payload["map"] = map_nav
+    # The PUBLIC Mapbox token for the client's map (pk. — safe to expose). Omitted
+    # when unset so the client just falls back to the simple view.
+    if mapbox_token:
+        payload["mapboxToken"] = mapbox_token
     if coached:
         grade = _DEFAULT_GRADE
         if next_stop and isinstance(next_stop.get("grade"), int) and next_stop["grade"] in (1, 2):

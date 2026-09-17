@@ -42,7 +42,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import flagstate, geotab, jobber, liveness, profiles, roster, routes
-from .config import flag_config
+from .config import flag_config, mapbox_token
 from .db import DEFAULT_SCHEMA, connect
 from .motion import phase_for_fix
 from .payload import build_route_payload, build_session_payload
@@ -233,6 +233,11 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 shift_phase=live["shift_phase"],
                 route_count=live["route_count"],
                 up_next=live.get("up_next"),
+                # LIVE MAP nav (truck + road-following line + stop pins) — pure
+                # navigation, byte-identical both modes; None -> client simple view.
+                map_nav=live.get("map"),
+                # PUBLIC (pk.) Mapbox token for the client's map — safe to expose.
+                mapbox_token=mapbox_token() or None,
             )
         # READ-ONLY: nothing to commit.
         conn.rollback()

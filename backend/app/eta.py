@@ -36,6 +36,10 @@ _MAPBOX_URL = (
     "https://api.mapbox.com/directions/v5/mapbox/driving-traffic/"
     "{lng1},{lat1};{lng2},{lat2}"
 )
+# Same driving-traffic profile, but asking for the FULL geojson GEOMETRY — the
+# road-following "snaking breadcrumb" LineString the live nav map draws (LIVE MAP
+# brief §BACKEND). Multi-waypoint: truck through the next few stops.
+_MAPBOX_LINE_URL = "https://api.mapbox.com/directions/v5/mapbox/driving-traffic/{coords}"
 _TIMEOUT_S = 4.0          # brief: Mapbox call bounded to <=4s, then graceful null
 _CACHE_TTL_S = 20.0       # brief: cache ~20s per (truck, stop)
 _METERS_PER_MILE = 1609.344
@@ -43,6 +47,9 @@ _PT = "America/Los_Angeles"
 
 # (truck_key, stop_key) -> (expires_monotonic, result_or_None)
 _cache: dict[tuple, tuple[float, Optional[dict]]] = {}
+# (truck_key, stop_set_key) -> (expires_monotonic, line_or_None) — the route-geometry
+# cache, ~20s per (truck, stop-set) exactly like the ETA cache (one Mapbox integration).
+_line_cache: dict[tuple, tuple[float, Optional[list]]] = {}
 
 
 def _pt_tz():
@@ -168,3 +175,113 @@ def live_eta(
 def clear_cache() -> None:
     """Drop the whole ETA cache (used by tests; harmless in prod)."""
     _cache.clear()
+    _line_cache.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Route-line geometry (the live nav map's road-following "snaking breadcrumbs").
+# Same Mapbox driving-traffic client + ~20s cache as the ETA — ONE integration.
+# --------------------------------------------------------------------------- #
+# Mapbox Directions accepts at most 25 waypoints; the truck + a few stops is well
+# under that. We only ever pass the truck + the next handful of stops.
+_MAX_LINE_WAYPOINTS = 12
+
+
+def _default_line_fetch(coords: str, token: str, timeout: float) -> Optional[dict]:
+    """Call Mapbox driving-traffic for the FULL geojson geometry through `coords`
+    ('lng,lat;lng,lat;...'), or None on ANY error. Never raises. `overview=full`
+    returns the road-following LineString (the snaking breadcrumbs)."""
+    url = _MAPBOX_LINE_URL.format(coords=coords) + "?" + urllib.parse.urlencode(
+        {
+            "access_token": token,
+            "geometries": "geojson",
+            "overview": "full",
+        }
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # nosec - fixed host
+            if getattr(resp, "status", 200) != 200:
+                return None
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def parse_route_line(data: Optional[dict]) -> Optional[list]:
+    """Fold a Mapbox Directions (geojson) response into the [[lng,lat], ...] road
+    line, or None when the response carries no usable geometry. Pure. The client
+    draws this LineString exactly as returned (a GeoJSON coordinate array)."""
+    if not isinstance(data, dict):
+        return None
+    routes = data.get("routes") or []
+    if not routes:
+        return None
+    geom = (routes[0] or {}).get("geometry") or {}
+    if geom.get("type") != "LineString":
+        return None
+    coords = geom.get("coordinates")
+    if not isinstance(coords, list) or len(coords) < 2:
+        return None
+    out = []
+    for pt in coords:
+        if (isinstance(pt, (list, tuple)) and len(pt) >= 2
+                and isinstance(pt[0], (int, float)) and isinstance(pt[1], (int, float))):
+            out.append([float(pt[0]), float(pt[1])])
+    return out if len(out) >= 2 else None
+
+
+def route_line(
+    truck_key,
+    waypoints: list,
+    *,
+    token: Optional[str] = None,
+    fetch: Optional[Callable] = None,
+    use_cache: bool = True,
+    timeout_s: float = _TIMEOUT_S,
+) -> Optional[list]:
+    """The road-following [[lng,lat], ...] line through `waypoints` (each (lat,lng),
+    truck FIRST then the upcoming stops), or None (graceful) on any missing input /
+    Mapbox failure.
+
+    Graceful-null conditions (each -> the client omits the line and keeps a simple
+    view, never a fake straight line):
+      - no MAPBOX_TOKEN configured
+      - fewer than two usable waypoints
+      - Mapbox errors, times out (<= timeout_s), or returns no geometry
+
+    Cached ~20s per (truck_key, stop-set) so one truck's ~20s poll makes at most one
+    Mapbox geometry call. `fetch` is injectable for tests.
+    """
+    token = token if token is not None else mapbox_token()
+    if not token:
+        return None
+    # Clean the waypoints: keep only real (lat,lng) pairs, cap to Mapbox's limit.
+    pts = []
+    for wp in waypoints or []:
+        if (isinstance(wp, (list, tuple)) and len(wp) >= 2
+                and isinstance(wp[0], (int, float)) and isinstance(wp[1], (int, float))):
+            pts.append((float(wp[0]), float(wp[1])))
+    pts = pts[:_MAX_LINE_WAYPOINTS]
+    if len(pts) < 2:
+        return None
+
+    key = (truck_key, tuple(pts))
+    if use_cache:
+        hit = _line_cache.get(key)
+        if hit is not None and hit[0] > time.monotonic():
+            return hit[1]
+
+    # Mapbox path is 'lng,lat;lng,lat;...' (note the axis order flip vs (lat,lng)).
+    coords = ";".join(f"{lng},{lat}" for lat, lng in pts)
+    fetch = fetch or _default_line_fetch
+    try:
+        data = fetch(coords, token, timeout_s)
+    except TypeError:
+        data = fetch(coords, token)
+    except Exception:
+        data = None
+
+    result = parse_route_line(data)
+    if use_cache:
+        _line_cache[key] = (time.monotonic() + _CACHE_TTL_S, result)
+    return result

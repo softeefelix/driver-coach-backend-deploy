@@ -41,6 +41,11 @@ GEM_RATE_MULT = 1.5
 # client paints these REAL forward stops (or hides the list) — never a fake queue.
 UP_NEXT_MAX = 4
 
+# How many upcoming stops the LIVE MAP route line snakes through (brief: "next
+# ~4-6 upcoming stops"). The line is truck -> current stop -> the next few, so the
+# driver sees the road-following breadcrumbs for the leg they're on plus what's ahead.
+MAP_LINE_STOPS = 6
+
 # Position-first route selection floor (Felix road-test, Emery/13 South SF): among a
 # truck's DOW candidate clusters we pick the one NEAREST the live truck position, but
 # only a cluster carrying at least this many ORDERED TIMED STOPS may win on nearness.
@@ -420,6 +425,69 @@ def _attach_live_eta(
     return stop
 
 
+def build_map_nav(
+    truck_no: int,
+    position: Optional[dict],
+    stops: list[dict],
+    current_idx: int,
+) -> Optional[dict]:
+    """The LIVE MAP nav object (brief §BACKEND): the truck position + the road-
+    following route line + the upcoming stop pins. PURE navigation, shown IDENTICALLY
+    to every driver (disguise-safe: coordinates ARE allowed inside this map object,
+    but it carries NO grade/coached/voice — it is byte-identical coached vs nominal).
+
+    Shape:
+      { truck: {lat,lng, heading?},
+        line:  [[lng,lat], ...],          # Mapbox geojson, truck -> next ~4-6 stops
+        stops: [{lng,lat,name,order}, ...] }
+
+    Graceful degrade (brief §4): with NO live position we omit the whole map (the
+    client falls back to the simple view). With a position but no usable Mapbox line
+    (no token / timeout / error) we omit ONLY `line` and still ship truck + pins.
+    Returns None to omit the map entirely. Coordinates here are server data the map
+    NEEDS; they never carry coaching state.
+    """
+    # No live position -> no map at all (client falls back to the simple view).
+    if not position or position.get("lat") is None or position.get("lng") is None:
+        return None
+
+    tlat, tlng = float(position["lat"]), float(position["lng"])
+    truck = {"lat": tlat, "lng": tlng}
+    heading = position.get("bearing")
+    if isinstance(heading, (int, float)):
+        truck["heading"] = float(heading)
+
+    # The upcoming stops: the current stop the truck is heading to, then the next
+    # few (the same forward set the Up-Next list uses), each with coords for a pin.
+    upcoming = stops[current_idx: current_idx + MAP_LINE_STOPS]
+    pins = []
+    for s in upcoming:
+        lat, lng = s.get("lat"), s.get("lng")
+        if lat is None or lng is None:
+            continue
+        pins.append(
+            {
+                "lng": float(lng),
+                "lat": float(lat),
+                # friendly NAME = STREET (not house numbers), same helper as nextStop.
+                "name": friendly_stop_name(s.get("address")) or "Stop",
+                "order": s.get("stop_order"),
+            }
+        )
+
+    # The road-following line snakes from the truck THROUGH the upcoming stops.
+    # Waypoints are (lat,lng); eta.route_line flips to Mapbox lng,lat order.
+    from . import eta as _eta
+
+    waypoints = [(tlat, tlng)] + [(p["lat"], p["lng"]) for p in pins]
+    line = _eta.route_line(truck_no, waypoints)
+
+    nav: dict = {"truck": truck, "stops": pins}
+    if line:
+        nav["line"] = line          # omit on Mapbox miss (client keeps truck + pins)
+    return nav
+
+
 def resolve_next_stop(
     cur, truck_no: int, dow: Optional[str] = None, after_order: int = 0
 ) -> dict:
@@ -573,4 +641,8 @@ def resolve_live_route(
         "route_count": route_count,
         "total_stops": total,
         "up_next": up_next,
+        # LIVE MAP nav (truck + road-following line + upcoming stop pins). Disguise-
+        # safe: pure navigation, byte-identical both modes; None -> client falls back
+        # to the simple view (no live position). Reuses the position already read.
+        "map": build_map_nav(truck_no, position, stops, idx),
     }
