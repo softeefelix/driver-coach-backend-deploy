@@ -41,7 +41,8 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import flagstate, geotab, jobber, liveness, profiles, roster, routes
+from . import assignment, flagstate, geotab, jobber, liveness, profiles, roster, routes
+from . import events as events_mod
 from .config import flag_config, mapbox_token
 from .db import DEFAULT_SCHEMA, connect
 from .motion import phase_for_fix
@@ -64,6 +65,11 @@ class SignInRequest(BaseModel):
     truck: int
     driver_id: Optional[str] = None
     name: Optional[str] = None
+
+
+class ConfirmAssignmentRequest(BaseModel):
+    session_id: str
+    route_cluster_id: int
 
 
 class Heartbeat(BaseModel):
@@ -122,6 +128,18 @@ def do_signin(req: SignInRequest, schema: str = DEFAULT_SCHEMA) -> dict:
     # REAL latest driver_profiles snapshot -> DriverProfile.
     profile = profiles.build_driver_profile(driver_id, square_name)
 
+    # Today's ONE_OFF Jobber events for THIS driver (operational, both modes identical).
+    # Fetched BEFORE the DB transaction so a slow Jobber never holds the session write
+    # open. get_today_events ALWAYS returns a list ([] on a genuine empty day AND on any
+    # failure — the locked "-> [] (panel hidden)" contract) and NEVER raises; the extra
+    # try/except is belt-and-braces so the feed can NEVER crash sign-in. A crash here is a
+    # failure -> [] (clear the panel per the contract), never None (which would omit the
+    # key and leave a stale panel up).
+    try:
+        today_events = events_mod.get_today_events(square_name)
+    except Exception:
+        today_events = []
+
     session_id = str(uuid.uuid4())
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
@@ -130,19 +148,14 @@ def do_signin(req: SignInRequest, schema: str = DEFAULT_SCHEMA) -> dict:
             flags = resolve_flags(profile, prior, flag_config())
             flagstate.save_state(cur, driver_id, flags.next_state)
 
-            # truck -> today's route -> next stop (coords for motion distance).
-            resolved = routes.resolve_next_stop(cur, req.truck)
-            next_stop = resolved["next_stop"]
-            route_cluster_id = resolved["route_cluster_id"]
-
-            # server-side motion phase from the latest Geotab fix (best-effort).
-            phase = DRIVING
-            truck_id = routes.truck_id_for(cur, req.truck)
-            if truck_id and next_stop:
-                fix = geotab.latest_fix(
-                    cur, truck_id, next_stop.get("lat"), next_stop.get("lng")
-                )
-                phase = phase_for_fix(fix, prior_phase=DRIVING)
+            # Assignment is Jobber area -> Master Route, NEVER truck GPS. The proposal
+            # is shown on the client before this session receives an authoritative route.
+            proposed = assignment.resolve_assignment(driver_name, req.truck, datetime.date.today())
+            proposed_route_id = proposed.get("route_cluster_id")
+            live = (routes.resolve_live_route(cur, req.truck, route_cluster_id=proposed_route_id)
+                    if proposed_route_id is not None else None)
+            next_stop = live["next_stop"] if live else None
+            phase = live["phase"] if live else DRIVING
 
             payload = build_session_payload(
                 driver_id=driver_id,
@@ -150,9 +163,13 @@ def do_signin(req: SignInRequest, schema: str = DEFAULT_SCHEMA) -> dict:
                 truck_no=req.truck,
                 flags=flags,
                 next_stop=next_stop,
-                route_cluster_id=route_cluster_id,
+                route_cluster_id=proposed_route_id,
                 phase=phase,
+                events=today_events,
             )
+            # Operational assignment fields are byte-identical for both modes.  A later
+            # friendly label belongs in assignment._candidate_objects, not this client seam.
+            payload["assignment"] = proposed
 
             # persist the session row (coached/arrival_voice are INTERNAL audit only,
             # never shipped — the payload above carries no boolean).
@@ -171,7 +188,7 @@ def do_signin(req: SignInRequest, schema: str = DEFAULT_SCHEMA) -> dict:
                     driver_id,
                     flags.coached,
                     flags.arrival_voice,
-                    route_cluster_id,
+                    None,  # persists ONLY after the driver explicitly confirms
                     _json.dumps(flags.reason),
                 ),
             )
@@ -179,6 +196,37 @@ def do_signin(req: SignInRequest, schema: str = DEFAULT_SCHEMA) -> dict:
 
     # The wire response: session_id + the disguise-safe payload. No boolean leaks.
     return {"session_id": session_id, **payload}
+
+
+def do_confirm_assignment(req: ConfirmAssignmentRequest, schema: str = DEFAULT_SCHEMA) -> dict:
+    """Persist the driver's chosen route and return its authoritative live snapshot."""
+    with connect(schema=schema, autocommit=False) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT truck_no, coached FROM driver_coach_session WHERE session_id=%s",
+                (req.session_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise KeyError(f"unknown session_id: {req.session_id}")
+            truck_no, coached = row
+            # All-routes picker values must represent a real route-day. This is a
+            # read-only existence check, never a truck/GPS route inference.
+            if not routes.ordered_stops_for_route(cur, req.route_cluster_id, routes.dow_name()):
+                raise ValueError("route is unavailable for today")
+            cur.execute(
+                "UPDATE driver_coach_session SET route_cluster_id=%s WHERE session_id=%s",
+                (req.route_cluster_id, req.session_id),
+            )
+            live = routes.resolve_live_route(cur, truck_no, route_cluster_id=req.route_cluster_id)
+            payload = build_route_payload(
+                next_stop=live["next_stop"], route_cluster_id=live["route_cluster_id"],
+                phase=live["phase"], coached=bool(coached), shift_phase=live["shift_phase"],
+                route_count=live["route_count"], up_next=live.get("up_next"),
+                map_nav=live.get("map"), mapbox_token=mapbox_token() or None,
+            )
+        conn.commit()
+    return {"session_id": req.session_id, **payload}
 
 
 def do_heartbeat(req: HeartbeatRequest, schema: str = DEFAULT_SCHEMA) -> dict:
@@ -216,15 +264,32 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT truck_no, coached, route_cluster_id "
+                "SELECT truck_no, coached, route_cluster_id, driver_id "
                 "FROM driver_coach_session WHERE session_id = %s",
                 (session_id,),
             )
             row = cur.fetchone()
             if row is None:
                 raise KeyError(f"unknown session_id: {session_id}")
-            truck_no, coached, route_cluster_id = row
+            truck_no, coached, route_cluster_id, driver_id = row
+            if route_cluster_id is None:
+                # Never recreate the old truck/GPS route guess while an explicit
+                # driver confirmation is pending.
+                raise ValueError("route confirmation required")
             live = routes.resolve_live_route(cur, truck_no, route_cluster_id=route_cluster_id)
+            # Today's ONE_OFF Jobber events for THIS driver (operational, both modes
+            # identical). The session row persists only driver_id, so recover a
+            # comparable name from it (jobber.name_from_driver_id) for the events
+            # match. Cached ~5 min, so the per-poll cost is bounded. get_today_events
+            # ALWAYS returns a list ([] on a genuine empty day AND on any failure — the
+            # locked "-> [] (panel hidden)" contract) and never raises; the try/except is
+            # belt-and-braces so a Jobber hiccup never crashes the poll. A crash here is a
+            # failure -> [] (clear the panel per the contract), never None.
+            try:
+                driver_name_for_events = jobber.name_from_driver_id(driver_id)
+                today_events = events_mod.get_today_events(driver_name_for_events or "")
+            except Exception:
+                today_events = []
             payload = build_route_payload(
                 next_stop=live["next_stop"],
                 route_cluster_id=live["route_cluster_id"],
@@ -238,6 +303,8 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 map_nav=live.get("map"),
                 # PUBLIC (pk.) Mapbox token for the client's map — safe to expose.
                 mapbox_token=mapbox_token() or None,
+                # Today's ONE_OFF Jobber events (operational, both modes identical).
+                events=today_events,
             )
         # READ-ONLY: nothing to commit.
         conn.rollback()
@@ -263,6 +330,18 @@ def signin(req: SignInRequest) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/driver-coach/v1/assignment/confirm")
+def confirm_assignment(req: ConfirmAssignmentRequest) -> dict:
+    try:
+        return do_confirm_assignment(req)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/driver-coach/v1/heartbeat")
 def heartbeat(req: HeartbeatRequest) -> dict:
     try:
@@ -285,5 +364,7 @@ def get_route(session_id: str) -> dict:
         return do_route(session_id)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(e))

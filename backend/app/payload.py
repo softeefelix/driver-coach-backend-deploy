@@ -66,6 +66,15 @@ _FORBIDDEN_COACH = ("voice", "arrival_voice", "coached", "grade_reason")
 # still rides ONLY in the coach bundle. `map` carries none of the forbidden keys.
 _MAP_ALLOWED_KEYS = ("truck", "line", "stops")
 
+# EVENTS (Part-2 Jobber feed, Felix locked 2026-09-17): today's ONE_OFF booked gigs
+# for the signed-in driver. This is an OPERATIONAL fact of the truck's day, shown
+# IDENTICALLY to every driver (both modes) — so `events` is ALLOWED on the wire, and
+# the disguise test asserts a coached vs nominal events payload is byte-identical for
+# the same driver. Each row carries ONLY what/when/where + a Jobber status; it must
+# NEVER carry a grade/coached/voice key (that would turn an operational list into a
+# coaching signal). assert_disguise_safe re-checks every event row against these.
+_EVENT_ALLOWED_KEYS = ("title", "startTime", "address", "status")
+
 # Safe default grade when a coached stop has no computed grade (no route / missing
 # MR data): 2 = "needs work"/cultivate. Never fake a 1 ("camp here") on missing data.
 _DEFAULT_GRADE = 2
@@ -272,6 +281,21 @@ def assert_disguise_safe(payload: dict) -> bool:
                 raise ValueError(
                     f"disguise violation: map nav object must not carry a '{k}' key"
                 )
+    # EVENTS: an operational booking list, ALLOWED on the wire and IDENTICAL in both
+    # modes. Every row must carry ONLY the allowed what/when/where/status keys — never
+    # a grade/coached/voice key that would smuggle a coaching signal into the list.
+    events = payload.get("events")
+    if events is not None:
+        if not isinstance(events, list):
+            raise ValueError("disguise violation: events must be a list")
+        for row in events:
+            if not isinstance(row, dict):
+                raise ValueError("disguise violation: each event must be an object")
+            for k in row:
+                if k not in _EVENT_ALLOWED_KEYS:
+                    raise ValueError(
+                        f"disguise violation: event row must not carry a '{k}' key"
+                    )
     return True
 
 
@@ -284,6 +308,7 @@ def build_session_payload(
     route_cluster_id: Optional[int],
     phase: Optional[str] = None,
     live_eta: Optional[dict] = None,
+    events: Optional[list] = None,
 ) -> dict:
     """Assemble the disguise-safe session payload the client consumes.
 
@@ -292,6 +317,15 @@ def build_session_payload(
     PRESENT. `phase` is the server-computed motion phase (info the shell may seed
     the layout with); it is layout state, not a coaching flag. `live_eta` is the
     traffic-aware ETA on the BASE nextStop (defaults to whatever the stop carries).
+
+    `events` is today's ONE_OFF Jobber booking list for THIS driver (what/when/where
+    + status). It is an operational fact of the truck's day, shipped IDENTICALLY in
+    both modes (never a grade/coached/voice key). `get_today_events` ALWAYS returns a
+    list (a real list of events, or [] both when the driver genuinely has none today
+    AND on any Jobber/token/DB failure — the locked graceful-degradation contract), so
+    whenever a caller fetched events this ships `events` as that list and the client
+    renders/clears accordingly. `events=None` here is ONLY the "this payload was built
+    without fetching events" case (default arg) -> key omitted, client keeps its state.
     """
     payload = {
         "driver": {"id": driver_id, "name": driver_name},
@@ -300,6 +334,12 @@ def build_session_payload(
     }
     if phase is not None:
         payload["phase"] = phase
+    # EVENTS: present-iff a list was passed (get_today_events always returns one, incl.
+    # [] for both a genuine no-events day and any failure -> the locked "-> [] (panel
+    # hidden)" contract). A successful/failure [] SHIPS so the client CLEARS a stale
+    # panel; events=None is only the "not fetched" default -> omitted, client unchanged.
+    if events is not None:
+        payload["events"] = events
     if flags.coached:
         # the per-stop grade (1|2) rides INSIDE the coach bundle. Read it from the
         # resolved stop; a coached stop with no computed grade (no route / missing
@@ -325,6 +365,7 @@ def build_route_payload(
     up_next: Optional[list] = None,
     map_nav: Optional[dict] = None,
     mapbox_token: Optional[str] = None,
+    events: Optional[list] = None,
 ) -> dict:
     """The disguise-safe body for GET /driver-coach/v1/route (the live poll).
 
@@ -354,7 +395,13 @@ def build_route_payload(
     AND that the `map` object carries none of the forbidden keys.
     """
     payload: dict = {
-        "route": {"nextStop": build_next_stop(next_stop, route_cluster_id, live_eta)},
+        # The selected Master Route cluster is operational (not coaching state). Keep
+        # it in every confirmed response/poll so the client and simulator can verify
+        # that 1768 remains authoritative after sign-in; it is never inferred from GPS.
+        "route": {
+            "routeClusterId": route_cluster_id,
+            "nextStop": build_next_stop(next_stop, route_cluster_id, live_eta),
+        },
         "phase": phase,
     }
     if shift_phase is not None:
@@ -380,6 +427,16 @@ def build_route_payload(
     # when unset so the client just falls back to the simple view.
     if mapbox_token:
         payload["mapboxToken"] = mapbox_token
+    # EVENTS: today's ONE_OFF Jobber bookings for THIS driver (what/when/where + status).
+    # An operational fact of the truck's day, byte-IDENTICAL in both modes (carries no
+    # grade/coached/voice key). get_today_events ALWAYS returns a list, incl. [] for BOTH
+    # a genuine no-events day AND any Jobber/token/DB failure (the locked "-> [] (panel
+    # hidden)" contract): the [] SHIPS so the client CLEARS a stale panel (a cancelled/
+    # reassigned booking, a Pacific-day rollover, OR an outage stops directing staff to a
+    # gig that may no longer exist) and the map goes full-width. events=None here is only
+    # the "not fetched" default -> key omitted -> the client keeps its current state.
+    if events is not None:
+        payload["events"] = events
     if coached:
         grade = _DEFAULT_GRADE
         if next_stop and isinstance(next_stop.get("grade"), int) and next_stop["grade"] in (1, 2):
