@@ -162,6 +162,40 @@ def _candidate_objects(rows: list[tuple[int, str]]) -> list[dict]:
     ]
 
 
+def _truck_usual_route(conn, truck: int, dow: str, choices: list[dict]) -> Optional[dict]:
+    """The route this truck actually ran most recently on this weekday.
+
+    Jobber often has no cruise city (only a one-off event, or nothing). The
+    driver's usual Master Route for this truck+day is then the proposal — not a
+    28-route dump. Read-only. A miss returns None and the picker stays open.
+    """
+    allowed = {c["route_cluster_id"]: c for c in choices}
+    if not allowed or not truck:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT route_cluster_id
+                FROM active_sale_stops
+                WHERE truck_number = %s
+                  AND lower(dow) = lower(%s)
+                  AND route_cluster_id IS NOT NULL
+                GROUP BY route_cluster_id
+                ORDER BY max(created_at) DESC, count(*) DESC
+                LIMIT 12
+                """,
+                (int(truck), dow),
+            )
+            for (route_id,) in cur.fetchall():
+                hit = allowed.get(int(route_id))
+                if hit:
+                    return hit
+    except Exception:
+        return None
+    return None
+
+
 def resolve_assignment(driver_canonical: str, truck: int, day: datetime.date) -> dict:
     """Return a proposal plus every picker-safe candidate; never raise to sign-in.
 
@@ -193,15 +227,30 @@ def resolve_assignment(driver_canonical: str, truck: int, day: datetime.date) ->
             if area and not candidates:
                 candidates = _all_candidate_rows(conn, dow)
             choices = _candidate_objects(candidates)
+            city_matched = bool(area) and bool(_candidate_rows(conn, area, dow) or (
+                [(i, n) for i, n in _live_rows(conn, dow, season) if _name_for_city(n, area)]
+            ))
             # A lone candidate is a proposal only when Jobber supplied an area. With
             # no area, even one visible row is not evidence that it is this driver's
             # route; remain in the explicit picker path rather than guessing.
-            if area and len(choices) == 1:
+            if area and len(choices) == 1 and city_matched:
                 only = choices[0]
                 return {"route_cluster_id": only["route_cluster_id"], "route_name": only["name"],
                         "source": "candidate", "season_variant": season, "confidence": "medium",
                         "area": area, "dow": dow, "candidates": choices,
                         "all_candidates": all_choices}
+            # No matching cruise route (Jobber has no city, or only an event city like
+            # Stanford with no Master Route of that name) must not dump every Monday
+            # route as if they were equal. Propose the route this truck last ran on
+            # this weekday. The driver still confirms; "Not my route" is the escape.
+            if not city_matched:
+                usual = _truck_usual_route(conn, truck, dow, all_choices)
+                if usual:
+                    return {"route_cluster_id": usual["route_cluster_id"],
+                            "route_name": usual["name"], "source": "truck_history",
+                            "season_variant": season, "confidence": "medium",
+                            "area": area, "dow": dow, "candidates": [usual],
+                            "all_candidates": all_choices}
             return {"route_cluster_id": None, "route_name": None, "source": "candidate",
                     "season_variant": season, "confidence": "picker", "area": area,
                     "dow": dow, "candidates": choices, "all_candidates": all_choices}
