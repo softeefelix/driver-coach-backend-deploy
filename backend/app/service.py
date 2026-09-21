@@ -358,26 +358,6 @@ def get_roster() -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/driver-coach/v1/debug/master-db-url")
-def debug_master_db_url() -> dict:
-    """DEBUG: Return the Master Route database URL being used."""
-    from .assignment import _master_database_url
-    try:
-        url = _master_database_url()
-        # Mask the password for security
-        if '@' in url:
-            parts = url.split('@')
-            if '/' in parts[0]:
-                creds = parts[0].split('://')[1]
-                if ':' in creds:
-                    user, pwd = creds.split(':', 1)
-                    masked = f"{user}:***@{parts[1]}"
-                    return {"master_db_url": masked, "user": user}
-        return {"master_db_url": url}
-    except Exception as e:
-        return {"error": str(e)}
-
-
 @app.get("/driver-coach/v1/route")
 def get_route(session_id: str) -> dict:
     try:
