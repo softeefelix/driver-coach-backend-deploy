@@ -24,15 +24,22 @@ def _master_database_url() -> str:
     url = os.environ.get("MASTER_ROUTE_DATABASE_URL")
     if url:
         return url.strip().strip("'\"")
-    with open(_MASTER_ENV) as source:
-        for line in source:
-            key, sep, value = line.partition("=")
-            if sep and key.strip() == "DATABASE_URL":
-                url = value.strip().strip("'\"")
-                if "sslmode=" not in url:
-                    url += "&sslmode=require" if "?" in url else "?sslmode=require"
-                return url
-    raise RuntimeError("MASTER_ROUTE_DATABASE_URL is not configured")
+    try:
+        with open(_MASTER_ENV) as source:
+            for line in source:
+                key, sep, value = line.partition("=")
+                if sep and key.strip() == "DATABASE_URL":
+                    url = value.strip().strip("'\"")
+                    if "sslmode=" not in url:
+                        url += "&sslmode=require" if "?" in url else "?sslmode=require"
+                    return url
+    except (FileNotFoundError, IOError):
+        pass
+    # Fallback: use the main DATABASE_URL (same shared softeedatabase)
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        return url.strip().strip("'\"")
+    raise RuntimeError("MASTER_ROUTE_DATABASE_URL and DATABASE_URL are not configured")
 
 
 def _master_connection():
