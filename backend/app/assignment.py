@@ -115,6 +115,7 @@ def _candidate_rows(conn, city: str, dow: str) -> list[tuple[int, str]]:
 
 def _all_candidate_rows(conn, dow: str) -> list[tuple[int, str]]:
     with conn.cursor() as cur:
+        # First try: routes with timed stops on this DOW
         cur.execute(
             """
             SELECT DISTINCT rn.route_cluster_id, rn.name
@@ -126,6 +127,20 @@ def _all_candidate_rows(conn, dow: str) -> list[tuple[int, str]]:
             ORDER BY rn.name, rn.route_cluster_id
             """,
             (dow,),
+        )
+        rows = cur.fetchall()
+        if rows:
+            return [(int(route_id), str(name)) for route_id, name in rows]
+        
+        # Fallback: ALL non-retired routes if no DOW-specific routes exist
+        cur.execute(
+            """
+            SELECT DISTINCT rn.route_cluster_id, rn.name
+            FROM route_names rn
+            WHERE COALESCE(lower(rn.status), '') <> 'retired'
+              AND rn.name IS NOT NULL AND rn.name <> ''
+            ORDER BY rn.name, rn.route_cluster_id
+            """
         )
         return [(int(route_id), str(name)) for route_id, name in cur.fetchall()]
 
