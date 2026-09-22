@@ -360,7 +360,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             if truck.get("lat") is not None and live.get("driven_stops"):
                 from .driven_path import park_served_orders
                 for order in park_served_orders(
-                    frozen_plan, live["driven_stops"],
+                    live.get("match_plan") or frozen_plan, live["driven_stops"],
                     now_lat=truck["lat"], now_lng=truck["lng"],
                 ):
                     if order not in served_orders and order not in skipped_orders:

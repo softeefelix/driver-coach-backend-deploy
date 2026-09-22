@@ -677,4 +677,7 @@ def resolve_live_route(
             "phase": phase, "shift_phase": shift_phase, "route_count": route_count,
             "total_stops": total, "up_next": up_next, "advice_reason": advice["reason"],
             "turns": turns, "map": nav,
-            "driven_stops": (nav or {}).get("drivenStops") or []}
+            "driven_stops": (nav or {}).get("drivenStops") or [],
+            # The whole frozen plan, not the one stop on screen. A Park can clear
+            # a pin the advisor has not reached yet.
+            "match_plan": advice["plan"]}
