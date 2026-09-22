@@ -75,6 +75,15 @@ _MAP_ALLOWED_KEYS = ("truck", "line", "stops")
 # coaching signal). assert_disguise_safe re-checks every event row against these.
 _EVENT_ALLOWED_KEYS = ("title", "startTime", "address", "status")
 
+
+def _public_event_rows(events: list) -> list[dict]:
+    """Keep geocoded coordinates internal to advice and map construction."""
+    return [
+        {key: row[key] for key in _EVENT_ALLOWED_KEYS if key in row}
+        for row in events
+        if isinstance(row, dict)
+    ]
+
 # Safe default grade when a coached stop has no computed grade (no route / missing
 # MR data): 2 = "needs work"/cultivate. Never fake a 1 ("camp here") on missing data.
 _DEFAULT_GRADE = 2
@@ -247,6 +256,13 @@ def build_next_stop(
         "arrive": fmt_clock_ampm(stop.get("arrive")),      # BOOKED schedule time
         "leaveBy": fmt_clock_ampm(stop.get("leave_by")),
     }
+    # Done/Skip targets the immutable order in the confirmed session snapshot; this
+    # operational identifier carries no grade or coaching signal.
+    if isinstance(stop.get("stop_order"), int):
+        ns["stopOrder"] = stop["stop_order"]
+    # Operational advice (deadline / booked event / next plan), never a grade.
+    if isinstance(stop.get("advice_reason"), str) and stop["advice_reason"]:
+        ns["adviceReason"] = stop["advice_reason"]
     ns.update(_live_eta_fields(eta_src))   # etaMin/distMi/arriveEst — only when present
     return ns
 
@@ -339,7 +355,7 @@ def build_session_payload(
     # hidden)" contract). A successful/failure [] SHIPS so the client CLEARS a stale
     # panel; events=None is only the "not fetched" default -> omitted, client unchanged.
     if events is not None:
-        payload["events"] = events
+        payload["events"] = _public_event_rows(events)
     if flags.coached:
         # the per-stop grade (1|2) rides INSIDE the coach bundle. Read it from the
         # resolved stop; a coached stop with no computed grade (no route / missing
@@ -366,6 +382,7 @@ def build_route_payload(
     map_nav: Optional[dict] = None,
     mapbox_token: Optional[str] = None,
     events: Optional[list] = None,
+    turns: Optional[list] = None,
 ) -> dict:
     """The disguise-safe body for GET /driver-coach/v1/route (the live poll).
 
@@ -436,7 +453,11 @@ def build_route_payload(
     # gig that may no longer exist) and the map goes full-width. events=None here is only
     # the "not fetched" default -> key omitted -> the client keeps its current state.
     if events is not None:
-        payload["events"] = events
+        payload["events"] = _public_event_rows(events)
+    # Real driving steps are optional: [] means routing had no usable street route;
+    # we deliberately never synthesize a direction from an address string.
+    if turns:
+        payload["turns"] = turns
     if coached:
         grade = _DEFAULT_GRADE
         if next_stop and isinstance(next_stop.get("grade"), int) and next_stop["grade"] in (1, 2):

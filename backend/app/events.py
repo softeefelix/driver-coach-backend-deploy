@@ -47,11 +47,13 @@ import datetime
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from . import jobber
+from .config import mapbox_token
 from .db import load_database_url
 from .payload import fmt_clock_ampm
 
@@ -75,6 +77,13 @@ DB_CONNECT_TIMEOUT_S = 4
 # Cache ~5 min per (driver_lower, day_iso) — the visits query cost is high.
 _CACHE_TTL_S = 300
 _cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+
+# Jobber supplies only a street + city. Geocoding happens before these rows reach
+# advise_plan so booked events can become real map pins; the total keeps sign-in/poll
+# responsive even when several addresses are not resolvable.
+MAPBOX_GEOCODE_URL = "https://api.mapbox.com/search/geocode/v6/forward"
+GEOCODE_TIMEOUT_S = 2.0
+GEOCODE_TOTAL_TIMEOUT_S = 4.0
 
 # The verified working query (card §VERIFIED JOBBER MECHANICS; probed live today).
 # `first: 30` is the visits-query cost cap — NEVER raise it.
@@ -159,6 +168,70 @@ def filter_and_format(nodes: list, driver_canonical: str) -> list[dict]:
     for r in rows:
         r.pop("_sort", None)
     return rows
+
+
+def _default_geocode_fetch(url: str, timeout: float) -> Optional[dict]:
+    """Fetch one Mapbox forward-geocode response, swallowing transport failures."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:  # nosec - fixed Mapbox host
+            if getattr(response, "status", 200) != 200:
+                return None
+            result = json.loads(response.read().decode())
+            return result if isinstance(result, dict) else None
+    except Exception:
+        return None
+
+
+def _parse_geocode(data: Optional[dict]) -> Optional[tuple[float, float]]:
+    """Return (lat, lng) from a Mapbox FeatureCollection, or None for bad data."""
+    if not isinstance(data, dict):
+        return None
+    features = data.get("features") or []
+    if not features or not isinstance(features[0], dict):
+        return None
+    coordinates = ((features[0].get("geometry") or {}).get("coordinates") or [])
+    if (not isinstance(coordinates, (list, tuple)) or len(coordinates) < 2
+            or not isinstance(coordinates[0], (int, float)) or not isinstance(coordinates[1], (int, float))):
+        return None
+    lng, lat = float(coordinates[0]), float(coordinates[1])
+    return lat, lng
+
+
+def geocode_event_rows(rows: list[dict], *, token: Optional[str] = None, fetch=None) -> list[dict]:
+    """Add lat/lng before advise_plan, retaining and flagging every un-geocoded event."""
+    token = mapbox_token() if token is None else token
+    fetch = fetch or _default_geocode_fetch
+    deadline = time.monotonic() + GEOCODE_TOTAL_TIMEOUT_S
+    enriched: list[dict] = []
+    for raw in rows or []:
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        lat, lng = row.get("lat"), row.get("lng")
+        if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+            row["lat"], row["lng"] = float(lat), float(lng)
+            row.pop("coordinates_missing", None)
+            enriched.append(row)
+            continue
+        point = None
+        address = row.get("address")
+        remaining = deadline - time.monotonic()
+        if token and remaining > 0 and isinstance(address, str) and address.strip():
+            url = MAPBOX_GEOCODE_URL + "?" + urllib.parse.urlencode({
+                "q": address, "limit": 1, "access_token": token,
+            })
+            try:
+                data = fetch(url, min(GEOCODE_TIMEOUT_S, remaining))
+            except Exception:
+                data = None
+            point = _parse_geocode(data)
+        if point is not None:
+            row["lat"], row["lng"] = point
+            row.pop("coordinates_missing", None)
+        else:
+            row["coordinates_missing"] = True
+        enriched.append(row)
+    return enriched
 
 
 def _fmt_pt_time(start_at_iso: Optional[str]) -> Optional[str]:
@@ -349,7 +422,7 @@ def get_today_events(
             # cached blank for 5 min. Returning [] (not None) means an outage that
             # coincides with a cancellation still clears the stale/wrong event.
             return []
-        rows = filter_and_format(nodes, driver_canonical)
+        rows = geocode_event_rows(filter_and_format(nodes, driver_canonical))
         _cache[key] = (now, rows)  # cache SUCCESS only (incl. an empty [])
         return rows
     except Exception:

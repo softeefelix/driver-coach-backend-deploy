@@ -46,6 +46,11 @@ UP_NEXT_MAX = 4
 # driver sees the road-following breadcrumbs for the leg they're on plus what's ahead.
 MAP_LINE_STOPS = 6
 
+
+def _is_school_address(address: object) -> bool:
+    """Identify timetable school stops without assuming a nonexistent DB column."""
+    return isinstance(address, str) and ("school" in address.lower() or "elementary" in address.lower())
+
 # Position-first route selection floor (Felix road-test, Emery/13 South SF): among a
 # truck's DOW candidate clusters we pick the one NEAREST the live truck position, but
 # only a cluster carrying at least this many ORDERED TIMED STOPS may win on nearness.
@@ -333,19 +338,22 @@ def ordered_stops_for_route(cur, route_cluster_id: int, dow: str) -> list[dict]:
     out = []
     for row in cur.fetchall():
         order, stop_cluster_id, arrive, leave_by, address, lat, lng, exp_per_visit, visits = row
-        out.append(
-            {
-                "stop_order": int(order),
-                "stop_cluster_id": int(stop_cluster_id) if stop_cluster_id is not None else None,
-                "arrive": arrive,
-                "leave_by": leave_by,
-                "address": address,
-                "lat": float(lat) if lat is not None else None,
-                "lng": float(lng) if lng is not None else None,
-                "exp_per_visit": float(exp_per_visit) if exp_per_visit is not None else None,
-                "visits": int(visits) if visits is not None else None,
-            }
-        )
+        stop = {
+            "stop_order": int(order),
+            "stop_cluster_id": int(stop_cluster_id) if stop_cluster_id is not None else None,
+            "arrive": arrive,
+            "leave_by": leave_by,
+            "address": address,
+            "lat": float(lat) if lat is not None else None,
+            "lng": float(lng) if lng is not None else None,
+            "exp_per_visit": float(exp_per_visit) if exp_per_visit is not None else None,
+            "visits": int(visits) if visits is not None else None,
+        }
+        # route_timed_stops has no kind column. Mark schools from the loaded route
+        # address now, before the frozen snapshot reaches advise_plan.
+        if _is_school_address(address):
+            stop["kind"] = "school"
+        out.append(stop)
     return out
 
 
@@ -476,15 +484,23 @@ def build_map_nav(
         )
 
     # The road-following line snakes from the truck THROUGH the upcoming stops.
-    # Waypoints are (lat,lng); eta.route_line flips to Mapbox lng,lat order.
-    from . import eta as _eta
-
+    # Waypoints are (lat,lng); street_route returns Mapbox-style [lng,lat] points.
     waypoints = [(tlat, tlng)] + [(p["lat"], p["lng"]) for p in pins]
-    line = _eta.route_line(truck_no, waypoints)
+    # Master Route's drive-path (or direct OSRM when its base is unavailable) owns
+    # the road geometry. Do not ask Mapbox for a shortest path through the pins and
+    # never substitute a straight chord when no street route is available.
+    from .street_route import advised_leg
+    traced = advised_leg(waypoints)
+    line = None
+    line_source = None
+    if isinstance(traced, dict):
+        line = traced.get("line")
+        line_source = traced.get("source")
 
     nav: dict = {"truck": truck, "stops": pins}
-    if line:
-        nav["line"] = line          # omit on Mapbox miss (client keeps truck + pins)
+    if isinstance(line, list) and line:
+        nav["line"] = line
+        nav["line_source"] = line_source or "drive-path"
     return nav
 
 
@@ -528,6 +544,12 @@ def resolve_live_route(
     truck_no: int,
     route_cluster_id: Optional[int] = None,
     dow: Optional[str] = None,
+    *,
+    frozen_plan: Optional[list[dict]] = None,
+    served_orders: Optional[set[int]] = None,
+    skipped_orders: Optional[set[int]] = None,
+    events: Optional[list[dict]] = None,
+    now_minutes: Optional[int] = None,
 ) -> dict:
     """Follow the truck along its ordered route and return its CURRENT state.
 
@@ -577,72 +599,67 @@ def resolve_live_route(
             "phase": DRIVING, "shift_phase": "plan", "route_count": None, "total_stops": 0,
         }
 
-    stops = ordered_stops_for_route(cur, route_id, dow)
+    # Confirmation persists this exact source snapshot. For legacy/session-less calls we
+    # still resolve the ordered Master Route once, but GPS never selects an index.
+    stops = frozen_plan if frozen_plan is not None else ordered_stops_for_route(cur, route_id, dow)
     total = len(stops)
     if total == 0:
-        return {
-            "dow": dow, "route_cluster_id": route_id, "next_stop": None,
-            "phase": DRIVING, "shift_phase": "plan", "route_count": None, "total_stops": 0,
-        }
+        return {"dow": dow, "route_cluster_id": route_id, "next_stop": None,
+                "phase": DRIVING, "shift_phase": "plan", "route_count": None, "total_stops": 0}
 
-    # Pick the current stop: nearest ordered stop to the live position; fall back to
-    # the first stop when we have no position (fresh sign-in / no pings).
-    idx = 0
-    if position is not None:
-        best_d = None
-        for i, s in enumerate(stops):
-            if s.get("lat") is None or s.get("lng") is None:
-                continue
-            d = geotab.haversine_m(position["lat"], position["lng"], s["lat"], s["lng"])
-            if best_d is None or d < best_d:
-                best_d, idx = d, i
-    stop = dict(stops[idx])
-    _grade_stop(cur, stop, route_id, dow)
-    # traffic-aware live ETA on the BASE stop — reuse the position we already read
-    # (both modes identical; graceful null on no-GPS/timeout/error; no coords on wire).
-    _attach_live_eta(cur, stop, truck_no, position=position)
+    from .advisor import advise_plan
+    now = datetime.datetime.now().astimezone().hour * 60 + datetime.datetime.now().astimezone().minute if now_minutes is None else now_minutes
+    advice = advise_plan(stops, served_orders=served_orders or set(), skipped_orders=skipped_orders or set(),
+                         events=events or [], now_minutes=now)
+    stop = dict(advice["next_stop"]) if advice["next_stop"] else None
+    legacy_index = None
+    # Compatibility only for callers that have not confirmed a session yet: preserve
+    # the old position display. Confirmed sessions always pass frozen_plan and therefore
+    # can advance solely by Done/Skip (or dwell persistence), never proximity.
+    if frozen_plan is None and not served_orders and not skipped_orders and not events and position is not None:
+        nearest = min(
+            (s for s in stops if s.get("lat") is not None and s.get("lng") is not None),
+            key=lambda s: geotab.haversine_m(position["lat"], position["lng"], s["lat"], s["lng"]),
+            default=None,
+        )
+        if nearest is not None:
+            stop = dict(nearest)
+            legacy_index = next((i for i, candidate in enumerate(stops) if candidate is nearest), None)
+    if stop is not None and stop.get("kind") != "event":
+        _grade_stop(cur, stop, route_id, dow)
+        _attach_live_eta(cur, stop, truck_no, position=position)
+    if stop is not None:
+        stop["advice_reason"] = advice["reason"]
 
-    # Live motion phase from Geotab against THIS stop (server owns the phase).
     phase = DRIVING
-    if truck_id:
+    if truck_id and stop is not None and stop.get("kind") != "event":
         fix = geotab.latest_fix(cur, truck_id, stop.get("lat"), stop.get("lng"))
         phase = motion.phase_for_fix(fix, prior_phase=DRIVING)
 
-    # §11 shift phase from real route position: heading in (wrap) once the truck is
-    # settled at the final ordered stop; otherwise plan. 'tail' (post-plan extension
-    # stops) needs an extension-queue signal we do not have, so we never fake it.
-    shift_phase = "wrap" if (idx == total - 1 and phase == "parked") else "plan"
+    completed = len(served_orders or set()) + len(skipped_orders or set())
+    shift_phase = "wrap" if (stop is None or (completed >= total and phase == "parked")) else "plan"
+    route_count = f"{legacy_index + 1 if legacy_index is not None else min(completed + 1, total)} / {total}"
 
-    # Plan-strip count = 1-based position through the ordered stops.
-    route_count = f"{idx + 1} / {total}"
+    # Advice may pull a time-critical school/event forward, but the frozen source list
+    # remains intact. The driver sees the advised leg first, then the other remaining
+    # plan entries — not a GPS-generated reroute.
+    completed_orders = (served_orders or set()) | (skipped_orders or set())
+    active = [s for s in advice["plan"] if s.get("kind") == "event" or s.get("stop_order") not in completed_orders]
+    def is_advised(row: dict) -> bool:
+        if not stop:
+            return False
+        if stop.get("kind") == "event":
+            return row.get("kind") == "event" and row.get("event_id") == stop.get("event_id")
+        return row.get("stop_order") == stop.get("stop_order")
+    nav_stops = ([stop] if stop else []) + [s for s in active if not is_advised(s)]
+    up_next = [{"name": friendly_stop_name(s.get("address")) or s.get("title") or "Next stop", "arrive": s.get("arrive")}
+               for s in nav_stops[1:1 + UP_NEXT_MAX]]
 
-    # REAL "Up next" forward queue: the next few ORDERED stops after the current one
-    # (name + booked time), so the client paints the driver's actual remaining day
-    # instead of a hardcoded demo list (Felix road-test: fake Riverside/Sunset/Harbor).
-    # Empty near the end of the day -> the client HIDES the Up-Next list. Never a fake.
-    up_next = []
-    for s in stops[idx + 1: idx + 1 + UP_NEXT_MAX]:
-        addr = s.get("address")
-        up_next.append(
-            {
-                # friendly NAME = STREET (not house numbers), same helper as nextStop
-                # so a multi-unit cluster never ships a ';'-joined number string.
-                "name": friendly_stop_name(addr) or "Next stop",
-                "arrive": s.get("arrive"),   # BOOKED schedule time (client formats AM/PM)
-            }
-        )
-
-    return {
-        "dow": dow,
-        "route_cluster_id": route_id,
-        "next_stop": stop,
-        "phase": phase,
-        "shift_phase": shift_phase,
-        "route_count": route_count,
-        "total_stops": total,
-        "up_next": up_next,
-        # LIVE MAP nav (truck + road-following line + upcoming stop pins). Disguise-
-        # safe: pure navigation, byte-identical both modes; None -> client falls back
-        # to the simple view (no live position). Reuses the position already read.
-        "map": build_map_nav(truck_no, position, stops, idx),
-    }
+    turns = []
+    if position and stop and stop.get("lat") is not None and stop.get("lng") is not None:
+        from . import eta as _eta
+        turns = _eta.route_steps(truck_no, [(position["lat"], position["lng"]), (stop["lat"], stop["lng"])])
+    return {"dow": dow, "route_cluster_id": route_id, "next_stop": stop,
+            "phase": phase, "shift_phase": shift_phase, "route_count": route_count,
+            "total_stops": total, "up_next": up_next, "advice_reason": advice["reason"],
+            "turns": turns, "map": build_map_nav(truck_no, position, nav_stops, 0)}

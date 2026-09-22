@@ -196,6 +196,7 @@ def _default_line_fetch(coords: str, token: str, timeout: float) -> Optional[dic
             "access_token": token,
             "geometries": "geojson",
             "overview": "full",
+            "steps": "true",
         }
     )
     try:
@@ -228,6 +229,39 @@ def parse_route_line(data: Optional[dict]) -> Optional[list]:
                 and isinstance(pt[0], (int, float)) and isinstance(pt[1], (int, float))):
             out.append([float(pt[0]), float(pt[1])])
     return out if len(out) >= 2 else None
+
+
+def parse_route_steps(data: Optional[dict]) -> list[dict]:
+    """Extract real Mapbox driving instructions from the same street-route response."""
+    if not isinstance(data, dict) or not data.get("routes"):
+        return []
+    out = []
+    for leg in (data["routes"][0] or {}).get("legs") or []:
+        for step in leg.get("steps") or []:
+            maneuver = step.get("maneuver") or {}
+            instruction = maneuver.get("instruction")
+            distance = step.get("distance")
+            if not isinstance(instruction, str) or not instruction or not isinstance(distance, (int, float)):
+                continue
+            out.append({"instruction": instruction, "distance_m": round(float(distance)),
+                        "street": step.get("name") or ""})
+    return out
+
+
+def route_steps(truck_key, waypoints: list, *, token: Optional[str] = None,
+                fetch: Optional[Callable] = None, timeout_s: float = _TIMEOUT_S) -> list[dict]:
+    """Driving steps for the advised next leg only; [] means no fabricated directions."""
+    token = token if token is not None else mapbox_token()
+    pts = [(float(w[0]), float(w[1])) for w in (waypoints or [])[:2]
+           if isinstance(w, (list, tuple)) and len(w) >= 2 and isinstance(w[0], (int, float)) and isinstance(w[1], (int, float))]
+    if not token or len(pts) != 2:
+        return []
+    coords = ";".join(f"{lng},{lat}" for lat, lng in pts)
+    try:
+        data = (fetch or _default_line_fetch)(coords, token, timeout_s)
+    except Exception:
+        return []
+    return parse_route_steps(data)
 
 
 def route_line(

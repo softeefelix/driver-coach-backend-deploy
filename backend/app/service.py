@@ -35,6 +35,7 @@ Maker: Forge. Reviewer of record: Warden. Nothing here deploys without Felix.
 from __future__ import annotations
 
 import datetime
+import json
 import uuid
 from typing import Any, Optional
 
@@ -70,6 +71,13 @@ class SignInRequest(BaseModel):
 class ConfirmAssignmentRequest(BaseModel):
     session_id: str
     route_cluster_id: int
+
+
+class StopOutcomeRequest(BaseModel):
+    """A deliberate driver outcome. Only the current frozen-plan stop may change."""
+    session_id: str
+    stop_order: int
+    outcome: str
 
 
 class Heartbeat(BaseModel):
@@ -203,30 +211,65 @@ def do_confirm_assignment(req: ConfirmAssignmentRequest, schema: str = DEFAULT_S
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT truck_no, coached FROM driver_coach_session WHERE session_id=%s",
+                "SELECT truck_no, coached, driver_id FROM driver_coach_session WHERE session_id=%s",
                 (req.session_id,),
             )
             row = cur.fetchone()
             if row is None:
                 raise KeyError(f"unknown session_id: {req.session_id}")
-            truck_no, coached = row
-            # All-routes picker values must represent a real route-day. This is a
-            # read-only existence check, never a truck/GPS route inference.
-            if not routes.ordered_stops_for_route(cur, req.route_cluster_id, routes.dow_name()):
+            truck_no, coached, driver_id = row
+            # Capture a concrete ordered plan ONCE. Later GPS polls read this immutable
+            # session snapshot, never selecting another cluster or nearest later stop.
+            frozen_plan = routes.ordered_stops_for_route(cur, req.route_cluster_id, routes.dow_name())
+            if not frozen_plan:
                 raise ValueError("route is unavailable for today")
+            try:
+                driver_name = jobber.name_from_driver_id(driver_id) or ""
+                today_events = events_mod.get_today_events(driver_name)
+            except Exception:
+                today_events = []
             cur.execute(
-                "UPDATE driver_coach_session SET route_cluster_id=%s WHERE session_id=%s",
-                (req.route_cluster_id, req.session_id),
+                "UPDATE driver_coach_session SET route_cluster_id=%s, plan_snapshot=%s::jsonb, "
+                "served_stop_orders='[]'::jsonb, skipped_stop_orders='[]'::jsonb WHERE session_id=%s",
+                (req.route_cluster_id, json.dumps(frozen_plan, default=str), req.session_id),
             )
-            live = routes.resolve_live_route(cur, truck_no, route_cluster_id=req.route_cluster_id)
+            live = routes.resolve_live_route(cur, truck_no, route_cluster_id=req.route_cluster_id,
+                                             frozen_plan=frozen_plan, events=today_events)
             payload = build_route_payload(
                 next_stop=live["next_stop"], route_cluster_id=live["route_cluster_id"],
                 phase=live["phase"], coached=bool(coached), shift_phase=live["shift_phase"],
                 route_count=live["route_count"], up_next=live.get("up_next"),
                 map_nav=live.get("map"), mapbox_token=mapbox_token() or None,
+                turns=live.get("turns"),
             )
         conn.commit()
     return {"session_id": req.session_id, **payload}
+
+
+def do_stop_outcome(req: StopOutcomeRequest, schema: str = DEFAULT_SCHEMA) -> dict:
+    """Persist a driver-confirmed Done/Skip outcome without altering the frozen plan."""
+    if req.outcome not in {"done", "skip"}:
+        raise ValueError("outcome must be done or skip")
+    with connect(schema=schema, autocommit=False) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT plan_snapshot, served_stop_orders, skipped_stop_orders FROM driver_coach_session WHERE session_id=%s", (req.session_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise KeyError(f"unknown session_id: {req.session_id}")
+            plan_raw, served_raw, skipped_raw = row
+            plan = plan_raw if isinstance(plan_raw, list) else json.loads(plan_raw or "[]")
+            served = {int(v) for v in (served_raw if isinstance(served_raw, list) else json.loads(served_raw or "[]"))}
+            skipped = {int(v) for v in (skipped_raw if isinstance(skipped_raw, list) else json.loads(skipped_raw or "[]"))}
+            from .advisor import advise_plan
+            current = advise_plan(plan, served_orders=served, skipped_orders=skipped,
+                                  now_minutes=datetime.datetime.now().hour * 60 + datetime.datetime.now().minute)["next_stop"]
+            if not current or current.get("stop_order") != req.stop_order:
+                raise ValueError("outcome must target the advised current planned stop")
+            (served if req.outcome == "done" else skipped).add(req.stop_order)
+            cur.execute("UPDATE driver_coach_session SET served_stop_orders=%s::jsonb, skipped_stop_orders=%s::jsonb WHERE session_id=%s",
+                        (json.dumps(sorted(served)), json.dumps(sorted(skipped)), req.session_id))
+        conn.commit()
+    return {"session_id": req.session_id, "outcome": req.outcome, "stop_order": req.stop_order}
 
 
 def do_heartbeat(req: HeartbeatRequest, schema: str = DEFAULT_SCHEMA) -> dict:
@@ -261,22 +304,27 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
     disguise-safe current state: route.nextStop, live motion phase, §11 shiftPhase,
     routeCount and — coached only, inside the coach bundle — the updated grade.
     """
+    auto_advanced = False
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT truck_no, coached, route_cluster_id, driver_id "
-                "FROM driver_coach_session WHERE session_id = %s",
+                "SELECT truck_no, coached, route_cluster_id, driver_id, plan_snapshot, "
+                "served_stop_orders, skipped_stop_orders FROM driver_coach_session WHERE session_id = %s",
                 (session_id,),
             )
             row = cur.fetchone()
             if row is None:
                 raise KeyError(f"unknown session_id: {session_id}")
-            truck_no, coached, route_cluster_id, driver_id = row
+            truck_no, coached, route_cluster_id, driver_id, plan_snapshot, served_raw, skipped_raw = row
+            # psycopg returns jsonb as a native list in normal operation; tolerate a
+            # string in lightweight test adapters without ever reconstructing a route.
+            frozen_plan = plan_snapshot if isinstance(plan_snapshot, list) else json.loads(plan_snapshot or "[]")
+            served_orders = {int(v) for v in (served_raw if isinstance(served_raw, list) else json.loads(served_raw or "[]"))}
+            skipped_orders = {int(v) for v in (skipped_raw if isinstance(skipped_raw, list) else json.loads(skipped_raw or "[]"))}
             if route_cluster_id is None:
                 # Never recreate the old truck/GPS route guess while an explicit
                 # driver confirmation is pending.
                 raise ValueError("route confirmation required")
-            live = routes.resolve_live_route(cur, truck_no, route_cluster_id=route_cluster_id)
             # Today's ONE_OFF Jobber events for THIS driver (operational, both modes
             # identical). The session row persists only driver_id, so recover a
             # comparable name from it (jobber.name_from_driver_id) for the events
@@ -290,6 +338,29 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 today_events = events_mod.get_today_events(driver_name_for_events or "")
             except Exception:
                 today_events = []
+            live = routes.resolve_live_route(
+                cur, truck_no, route_cluster_id=route_cluster_id, frozen_plan=frozen_plan,
+                served_orders=served_orders, skipped_orders=skipped_orders, events=today_events,
+            )
+            # A deliberate Done/Skip is the normal advance path, but a truck that has
+            # actually dwelled at the advised frozen-plan pin must advance too. The
+            # route resolver's parked phase is produced from Geotab's stop geofence +
+            # settle dwell state; it is not a nearest-later-stop shortcut. Persist it
+            # before rebuilding the snapshot so the next poll cannot resurrect it.
+            arrived = live.get("next_stop") or {}
+            arrived_order = arrived.get("stop_order")
+            if (live.get("phase") == "parked" and isinstance(arrived_order, int)
+                    and arrived_order not in served_orders and arrived_order not in skipped_orders):
+                served_orders.add(arrived_order)
+                cur.execute(
+                    "UPDATE driver_coach_session SET served_stop_orders=%s::jsonb WHERE session_id=%s",
+                    (json.dumps(sorted(served_orders)), session_id),
+                )
+                auto_advanced = True
+                live = routes.resolve_live_route(
+                    cur, truck_no, route_cluster_id=route_cluster_id, frozen_plan=frozen_plan,
+                    served_orders=served_orders, skipped_orders=skipped_orders, events=today_events,
+                )
             payload = build_route_payload(
                 next_stop=live["next_stop"],
                 route_cluster_id=live["route_cluster_id"],
@@ -305,9 +376,14 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 mapbox_token=mapbox_token() or None,
                 # Today's ONE_OFF Jobber events (operational, both modes identical).
                 events=today_events,
+                turns=live.get("turns"),
             )
-        # READ-ONLY: nothing to commit.
-        conn.rollback()
+        # The normal poll is read-only. A confirmed physical dwell is the one allowed
+        # forward-cursor transition, so commit only when that state was persisted.
+        if auto_advanced:
+            conn.commit()
+        else:
+            conn.rollback()
     return {"session_id": session_id, **payload}
 
 
@@ -340,6 +416,16 @@ def confirm_assignment(req: ConfirmAssignmentRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/driver-coach/v1/stop-outcome")
+def stop_outcome(req: StopOutcomeRequest) -> dict:
+    try:
+        return do_stop_outcome(req)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/driver-coach/v1/heartbeat")
