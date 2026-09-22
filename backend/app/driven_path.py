@@ -21,6 +21,9 @@ GEAR_DIAGNOSTIC = "DiagnosticGearPositionId"
 _MAX_CRUMBS = 400
 _MAX_STOPS = 80
 _PARK_MATCH_S = 120
+# A Park counts as making that planned stop only if the shifter went into Park
+# at the pin. 80 m covers a truck parked at the curb, not the next block.
+SERVED_PARK_M = 80
 
 
 def _utc(value) -> Optional[datetime.datetime]:
@@ -114,6 +117,35 @@ def fold_driven(
         "crumbs": [{"lng": p["lng"], "lat": p["lat"]} for p in thin],
         "stops": stops,
     }
+
+
+def park_served_orders(plan, park_stops, *, now_lat, now_lng, radius_m: float = SERVED_PARK_M) -> list[int]:
+    """Planned stop orders the truck has already made.
+
+    A stop is made when the transmission went into Park within radius_m of that
+    pin, and the truck is no longer sitting on it. Still at the pin means the
+    stop is in progress — do not advance yet. Park is the only signal. A drive-by
+    does not count.
+    """
+    from .geotab import haversine_m
+
+    if now_lat is None or now_lng is None:
+        return []
+    made = []
+    for stop in plan or []:
+        if not isinstance(stop, dict) or stop.get("kind") == "event":
+            continue
+        order = stop.get("stop_order")
+        lat, lng = stop.get("lat"), stop.get("lng")
+        if not isinstance(order, int) or lat is None or lng is None:
+            continue
+        if haversine_m(now_lat, now_lng, float(lat), float(lng)) <= radius_m:
+            continue  # still there
+        for park in park_stops or []:
+            if haversine_m(float(park["lat"]), float(park["lng"]), float(lat), float(lng)) <= radius_m:
+                made.append(order)
+                break
+    return made
 
 
 def driven_path(device_id: Optional[str], api=None, *, hours: float = 8) -> dict:

@@ -672,7 +672,9 @@ def resolve_live_route(
     if position and stop and stop.get("lat") is not None and stop.get("lng") is not None:
         from . import eta as _eta
         turns = _eta.route_steps(truck_no, [(position["lat"], position["lng"]), (stop["lat"], stop["lng"])])
+    nav = build_map_nav(truck_no, position, nav_stops, 0)
     return {"dow": dow, "route_cluster_id": route_id, "next_stop": stop,
             "phase": phase, "shift_phase": shift_phase, "route_count": route_count,
             "total_stops": total, "up_next": up_next, "advice_reason": advice["reason"],
-            "turns": turns, "map": build_map_nav(truck_no, position, nav_stops, 0)}
+            "turns": turns, "map": nav,
+            "driven_stops": (nav or {}).get("drivenStops") or []}

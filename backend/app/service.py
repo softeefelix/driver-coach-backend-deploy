@@ -352,11 +352,25 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             if (live.get("phase") == "parked" and isinstance(arrived_order, int)
                     and arrived_order not in served_orders and arrived_order not in skipped_orders):
                 served_orders.add(arrived_order)
+                auto_advanced = True
+            # Transmission Park at a planned pin, then leaving it, is the stop.
+            # The speed-based phase above almost never fires: each poll is one
+            # sample with no dwell history. Gear 126 is the same signal Geotab uses.
+            truck = (live.get("map") or {}).get("truck") or {}
+            if truck.get("lat") is not None and live.get("driven_stops"):
+                from .driven_path import park_served_orders
+                for order in park_served_orders(
+                    frozen_plan, live["driven_stops"],
+                    now_lat=truck["lat"], now_lng=truck["lng"],
+                ):
+                    if order not in served_orders and order not in skipped_orders:
+                        served_orders.add(order)
+                        auto_advanced = True
+            if auto_advanced:
                 cur.execute(
                     "UPDATE driver_coach_session SET served_stop_orders=%s::jsonb WHERE session_id=%s",
                     (json.dumps(sorted(served_orders)), session_id),
                 )
-                auto_advanced = True
                 live = routes.resolve_live_route(
                     cur, truck_no, route_cluster_id=route_cluster_id, frozen_plan=frozen_plan,
                     served_orders=served_orders, skipped_orders=skipped_orders, events=today_events,
