@@ -501,6 +501,19 @@ def build_map_nav(
     if isinstance(line, list) and line:
         nav["line"] = line
         nav["line_source"] = line_source or "drive-path"
+    # Yellow review overlay. The blue line stays the prescribed route. Crumbs are
+    # the path the truck actually drove; stops are transmission-Park events (gear
+    # 126), not a speed-zero dwell. A Geotab miss omits both — never a fake trail.
+    try:
+        from .driven_path import driven_path
+        driven = driven_path(position.get("device_id"))
+    except Exception:
+        driven = None
+    if isinstance(driven, dict):
+        if driven.get("crumbs"):
+            nav["driven"] = driven["crumbs"]
+        if driven.get("stops"):
+            nav["drivenStops"] = driven["stops"]
     return nav
 
 

@@ -163,6 +163,7 @@ def parse_device_status(
         "lng": lng,
         "fix_age_s": fix_age_s,
         "speed": speed_mph,
+        "device_id": device_id,
     }
 
 
