@@ -22,8 +22,10 @@ _MAX_CRUMBS = 400
 _MAX_STOPS = 80
 _PARK_MATCH_S = 120
 # A Park counts as making that planned stop only if the shifter went into Park
-# at the pin. 80 m covers a truck parked at the curb, not the next block.
-SERVED_PARK_M = 80
+# near the pin. 120 m is about a short block: a curb stop whose pin sits across
+# the street still counts, a park on the next street does not. 80 m missed a
+# real curb stop by one meter (Alameda de las Pulgas, truck 7, 81 m).
+SERVED_PARK_M = 120
 
 
 def _utc(value) -> Optional[datetime.datetime]:
