@@ -358,18 +358,27 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             # sample with no dwell history. Gear 126 is the same signal Geotab uses.
             truck = (live.get("map") or {}).get("truck") or {}
             if truck.get("lat") is not None and live.get("driven_stops"):
-                from .driven_path import park_served_orders
+                from .driven_path import park_served_orders, passed_orders
+                plan_rows = live.get("match_plan") or frozen_plan
                 for order in park_served_orders(
-                    live.get("match_plan") or frozen_plan, live["driven_stops"],
+                    plan_rows, live["driven_stops"],
                     now_lat=truck["lat"], now_lng=truck["lng"],
                 ):
                     if order not in served_orders and order not in skipped_orders:
                         served_orders.add(order)
                         auto_advanced = True
+                # Do not send the driver back to an earlier pin they have already
+                # driven past. The list stays the list. West 39th stays on the plan;
+                # it stops being Next once the truck is at a later pin.
+                for order in passed_orders(plan_rows, now_lat=truck["lat"], now_lng=truck["lng"]):
+                    if order not in served_orders and order not in skipped_orders:
+                        skipped_orders.add(order)
+                        auto_advanced = True
             if auto_advanced:
                 cur.execute(
-                    "UPDATE driver_coach_session SET served_stop_orders=%s::jsonb WHERE session_id=%s",
-                    (json.dumps(sorted(served_orders)), session_id),
+                    "UPDATE driver_coach_session SET served_stop_orders=%s::jsonb, "
+                    "skipped_stop_orders=%s::jsonb WHERE session_id=%s",
+                    (json.dumps(sorted(served_orders)), json.dumps(sorted(skipped_orders)), session_id),
                 )
                 live = routes.resolve_live_route(
                     cur, truck_no, route_cluster_id=route_cluster_id, frozen_plan=frozen_plan,

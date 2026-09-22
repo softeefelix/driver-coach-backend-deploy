@@ -121,6 +121,34 @@ def fold_driven(
     }
 
 
+def passed_orders(plan, *, now_lat, now_lng, ahead_m: float = 250) -> list[int]:
+    """Earlier planned stops the truck has already driven past.
+
+    The frozen list stays the list. This only drops a stop the truck is no longer
+    near, once it is clearly closer to a later pin. It does not invent a new route.
+    A stop they are still at is not passed.
+    """
+    from .geotab import haversine_m
+
+    if now_lat is None or now_lng is None:
+        return []
+    ranked = []
+    for stop in plan or []:
+        if not isinstance(stop, dict) or stop.get("kind") == "event":
+            continue
+        order = stop.get("stop_order")
+        lat, lng = stop.get("lat"), stop.get("lng")
+        if not isinstance(order, int) or lat is None or lng is None:
+            continue
+        ranked.append((haversine_m(now_lat, now_lng, float(lat), float(lng)), order))
+    if not ranked:
+        return []
+    nearest_m, nearest_order = min(ranked)
+    if nearest_m > ahead_m:
+        return []
+    return [order for dist, order in ranked if order < nearest_order and dist > ahead_m]
+
+
 def park_served_orders(plan, park_stops, *, now_lat, now_lng, radius_m: float = SERVED_PARK_M) -> list[int]:
     """Planned stop orders the truck has already made.
 
