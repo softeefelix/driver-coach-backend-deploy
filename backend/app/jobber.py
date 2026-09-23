@@ -67,6 +67,36 @@ def _norm(name: Optional[str]) -> str:
     return " ".join((name or "").split()).lower()
 
 
+def _city_from_dispatch_title(title: str) -> Optional[str]:
+    """A Jobber task title is the cruise sheet. 'South SF - Sign Hill' is a city.
+
+    Truck labels ('T7', 'Softee 7') are not cities. The first segment before
+    ' - ' is the area the dispatcher wrote.
+    """
+    text = " ".join(str(title or "").split())
+    if not text or re.fullmatch(r"(?:t|softee|truck)\s*\d+", text, flags=re.I):
+        return None
+    head = text.split(" - ", 1)[0].strip()
+    aliases = {"ssf": "South San Francisco", "south sf": "South San Francisco"}
+    return aliases.get(head.casefold(), head) or None
+
+
+def dispatch_area_for_day(driver_canonical: str, day: datetime.date) -> Optional[str]:
+    """City from today's Jobber task title. None if the sheet was not readable.
+
+    A truck-only task ('T7') is not a city. Do not fall through to sales history.
+    """
+    from . import events
+    titles = events.dispatch_titles_for_driver(driver_canonical, day)
+    if titles is None:
+        return None
+    for title in titles:
+        city = _city_from_dispatch_title(title)
+        if city:
+            return city
+    return None
+
+
 def driver_area_for_day(driver_canonical: str, day: datetime.date) -> Optional[str]:
     """Return the uniquely assigned Jobber city for the driver's Pacific day.
 

@@ -107,26 +107,35 @@ def _norm(name: Optional[str]) -> str:
     return " ".join((name or "").split()).lower()
 
 
-def _driver_matches(driver_canonical: str, assigned_full_names: list[str]) -> bool:
-    """True iff the signed-in driver is one of a visit's assigned users.
+def _same_driver(want: str, jobber_full: str) -> bool:
+    """Jobber 'Emery N' is the signed-in 'Emery' when that first name is unique.
 
-    The coach's driver is a CANONICAL (Square) name; Jobber shows a display form
-    ("Emery N", "Brian G", "Nate"). We resolve EACH assigned Jobber name through the
-    SAME jobber_name_map seam the rest of the stack uses (jobber.resolve_square_name)
-    and compare the resolved Square name to the driver's canonical (normalized). We
-    ALSO accept a direct normalized match (a Jobber name that is already the canonical
-    form, or one with no map entry). If nothing matches -> False, so an unmatched
-    driver shows 0 events and NEVER another driver's events.
+    Exact and mapped Square names still win. A shared first name does not match,
+    so two Emilys cannot steal each other's sheet.
     """
-    want = _norm(driver_canonical)
-    if not want:
+    if _norm(jobber_full) == _norm(want):
+        return True
+    mapped = _norm(jobber.resolve_square_name(jobber_full))
+    if mapped == _norm(want):
+        return True
+    want_first = _norm(want).split(" ")[0] if _norm(want) else ""
+    got_first = mapped.split(" ")[0] if mapped else ""
+    if not want_first or want_first != got_first or " " in _norm(want):
         return False
-    for full in assigned_full_names:
-        if _norm(full) == want:
-            return True
-        if _norm(jobber.resolve_square_name(full)) == want:
-            return True
-    return False
+    try:
+        mapping = jobber._load_map(jobber._map_path())
+    except Exception:
+        return False
+    same = {
+        _norm(str(value)) for key, value in mapping.items()
+        if value and _norm(str(key)).split(" ")[0] == want_first
+    }
+    return len(same) == 1
+
+
+def _driver_matches(driver_canonical: str, assigned_full_names: list[str]) -> bool:
+    """True iff the signed-in driver is one of a visit's assigned users."""
+    return any(_same_driver(driver_canonical, full) for full in assigned_full_names)
 
 
 # ── Pure parse/filter/format (no I/O — unit-testable) ─────────────────────────
@@ -332,6 +341,62 @@ def _jobber_gql(token: str, query: str, variables: dict, timeout: float) -> Opti
     })
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())
+
+
+_DAY_TASKS_QUERY = """
+query DayTasks($after: ISO8601DateTime!, $before: ISO8601DateTime!) {
+  tasks(filter: { startAt: { after: $after, before: $before } }, first: 50) {
+    nodes {
+      title
+      assignedUsers { nodes { name { full } } }
+    }
+  }
+}
+"""
+
+
+def dispatch_titles_for_driver(driver_canonical: str, day: datetime.date) -> Optional[list[str]]:
+    """Titles of today's Jobber tasks assigned to this driver.
+
+    The cruise sheet is a task, not a visit. A miss here is None so the caller
+    does not invent a city from last week's sales. Never raises.
+    """
+    deadline = time.monotonic() + JOBBER_TIMEOUT_S
+    after, before = _pt_day_window_utc(day)
+    token = _db_load_token()
+    if not token:
+        return None
+    body = None
+    for attempt in (1, 2):
+        try:
+            body = _jobber_gql(token, _DAY_TASKS_QUERY, {"after": after, "before": before},
+                               timeout=max(deadline - time.monotonic(), 0.5))
+        except Exception:
+            return None
+        if isinstance(body, dict) and not body.get("errors"):
+            break
+        throttled = any("throttl" in str(e.get("message") or "").casefold()
+                        for e in ((body or {}).get("errors") or []) if isinstance(e, dict))
+        if attempt == 1 and throttled and deadline - time.monotonic() > 8:
+            time.sleep(6)
+            continue
+        return None
+    nodes = ((body.get("data") or {}).get("tasks") or {}).get("nodes") or []
+    titles = []
+    for task in nodes:
+        if not isinstance(task, dict):
+            continue
+        assigned = [
+            (user.get("name") or {}).get("full")
+            for user in ((task.get("assignedUsers") or {}).get("nodes") or [])
+            if isinstance(user, dict)
+        ]
+        if not any(_same_driver(driver_canonical, n) for n in assigned if n):
+            continue
+        title = " ".join(str(task.get("title") or "").split())
+        if title:
+            titles.append(title)
+    return titles
 
 
 def _fetch_visits(day: datetime.date) -> Optional[list]:

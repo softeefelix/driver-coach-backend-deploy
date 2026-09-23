@@ -206,7 +206,9 @@ def resolve_assignment(driver_canonical: str, truck: int, day: datetime.date) ->
     season = _season_variant(day)
     area = None
     try:
-        area = jobber.driver_area_for_day(driver_canonical, day)
+        area = jobber.dispatch_area_for_day(driver_canonical, day)
+        if not area:
+            area = jobber.driver_area_for_day(driver_canonical, day)
         conn = _master_connection()
         try:
             # Always return the whole day as an explicit escape hatch.  `candidates`
@@ -239,18 +241,9 @@ def resolve_assignment(driver_canonical: str, truck: int, day: datetime.date) ->
                         "source": "candidate", "season_variant": season, "confidence": "medium",
                         "area": area, "dow": dow, "candidates": choices,
                         "all_candidates": all_choices}
-            # No matching cruise route (Jobber has no city, or only an event city like
-            # Stanford with no Master Route of that name) must not dump every Monday
-            # route as if they were equal. Propose the route this truck last ran on
-            # this weekday. The driver still confirms; "Not my route" is the escape.
-            if not city_matched:
-                usual = _truck_usual_route(conn, truck, dow, all_choices)
-                if usual:
-                    return {"route_cluster_id": usual["route_cluster_id"],
-                            "route_name": usual["name"], "source": "truck_history",
-                            "season_variant": season, "confidence": "medium",
-                            "area": area, "dow": dow, "candidates": [usual],
-                            "all_candidates": all_choices}
+            # No Jobber city (the visit list is events, and the task title did not
+            # name an area) is not evidence of last week's route. Leave the picker
+            # open. Do not propose truck sales history.
             return {"route_cluster_id": None, "route_name": None, "source": "candidate",
                     "season_variant": season, "confidence": "picker", "area": area,
                     "dow": dow, "candidates": choices, "all_candidates": all_choices}
