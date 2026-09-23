@@ -122,19 +122,44 @@ def _square_get(path: str, token: str) -> Optional[dict]:
         return None
 
 
-def _team(token: str) -> Optional[dict[str, str]]:
-    # The list endpoint is sufficient: our map is authoritative and can match exact
-    # employee names even if a non-active member must still appear in today's payments.
-    body = _square_get("team-members?limit=100", token)
-    if body is None:
+def _square_post(path: str, token: str, payload: dict) -> Optional[dict]:
+    request = urllib.request.Request(
+        urllib.parse.urljoin(SQUARE_API, path),
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Square-Version": SQUARE_VERSION,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:  # nosec B310: fixed API host
+            body = json.loads(response.read())
+            return body if isinstance(body, dict) else None
+    except Exception:
         return None
+
+
+def _team(token: str) -> Optional[dict[str, str]]:
+    # Search is POST. A GET to /team-members 404s and used to hide the whole ticker.
     out: dict[str, str] = {}
-    for member in body.get("team_members") or []:
-        ident = member.get("id")
-        name = " ".join(p for p in (member.get("given_name"), member.get("family_name")) if p).strip()
-        if ident and name:
-            out[ident] = name
-    return out
+    cursor = None
+    while True:
+        payload = {"limit": 100}
+        if cursor:
+            payload["cursor"] = cursor
+        body = _square_post("team-members/search", token, payload)
+        if body is None:
+            return None
+        for member in body.get("team_members") or []:
+            ident = member.get("id")
+            name = " ".join(p for p in (member.get("given_name"), member.get("family_name")) if p).strip()
+            if ident and name:
+                out[ident] = name
+        cursor = body.get("cursor")
+        if not cursor:
+            return out
 
 
 def _today_payments(token: str, day: dt.date) -> Optional[list[dict]]:
