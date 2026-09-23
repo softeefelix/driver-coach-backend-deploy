@@ -91,7 +91,7 @@ _DAY_VISITS_QUERY = """
 query DayVisits($after: ISO8601DateTime!, $before: ISO8601DateTime!) {
   visits(filter: { startAt: { after: $after, before: $before } }, first: 30) {
     nodes {
-      title startAt visitStatus
+      title startAt endAt visitStatus
       property { address { street city } }
       job { jobType }
       assignedUsers { nodes { name { full } } }
@@ -376,6 +376,59 @@ def _fetch_visits(day: datetime.date) -> Optional[list]:
             return None
         return ((body.get("data") or {}).get("visits") or {}).get("nodes") or []
     return None
+
+
+# ── Fleet ticker inputs (same Jobber fetch; never a second client) ────────────
+def _scorecard_square_name(name: str, mapping: dict) -> str:
+    """Map a Jobber assignee without fuzzy matching a known map entry."""
+    if name in mapping and mapping[name]:
+        return str(mapping[name]).strip()
+    normalized = _norm(name)
+    for jobber_name, square_name in mapping.items():
+        if _norm(jobber_name) == normalized and square_name:
+            return str(square_name).strip()
+    # No map entry: the Jobber name is the only honest candidate.  Do not infer a
+    # similarly named Square person.
+    return str(name).strip()
+
+
+def get_today_scorecard_inputs(day: Optional[datetime.date] = None) -> Optional[dict]:
+    """Return fleet ONE_OFF windows and every driver working today from one fetch.
+
+    ``None`` means Jobber is unavailable.  The ticker consumes this stricter result
+    rather than showing a partial rank.  Every assigned Jobber visit, not merely a
+    ONE_OFF visit, establishes that a driver is working today.
+    """
+    day = day or datetime.datetime.now(PACIFIC).date()
+    nodes = _fetch_visits(day)
+    if nodes is None:
+        return None
+    try:
+        mapping = jobber._load_map(jobber._map_path())
+    except Exception:
+        return None
+    windows: list[dict] = []
+    drivers: set[str] = set()
+    for visit in nodes:
+        if not isinstance(visit, dict):
+            continue
+        for assigned in ((visit.get("assignedUsers") or {}).get("nodes") or []):
+            name = ((assigned.get("name") or {}).get("full") if isinstance(assigned, dict) else None)
+            if not name:
+                continue
+            square_name = _scorecard_square_name(name, mapping)
+            if square_name:
+                drivers.add(square_name)
+                if ((visit.get("job") or {}).get("jobType") == "ONE_OFF"
+                        and visit.get("startAt") and visit.get("endAt")):
+                    windows.append({"driver": square_name, "start": visit["startAt"], "end": visit["endAt"]})
+    return {"windows": windows, "drivers": drivers}
+
+
+def get_today_scorecard_windows(day: Optional[datetime.date] = None) -> Optional[list[dict]]:
+    """Compatibility wrapper for callers that only need the ONE_OFF windows."""
+    inputs = get_today_scorecard_inputs(day)
+    return None if inputs is None else inputs["windows"]
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

@@ -383,6 +383,8 @@ def build_route_payload(
     mapbox_token: Optional[str] = None,
     events: Optional[list] = None,
     turns: Optional[list] = None,
+    ticker: Optional[list] = None,
+    here_stop: Optional[dict] = None,
 ) -> dict:
     """The disguise-safe body for GET /driver-coach/v1/route (the live poll).
 
@@ -418,6 +420,9 @@ def build_route_payload(
         "route": {
             "routeClusterId": route_cluster_id,
             "nextStop": build_next_stop(next_stop, route_cluster_id, live_eta),
+            # A Park-at-pin snapshot retains the physical pin separately while the
+            # already-served cursor advances to the following unserved planned stop.
+            "hereStop": build_next_stop(here_stop, route_cluster_id) if here_stop else None,
         },
         "phase": phase,
     }
@@ -454,10 +459,21 @@ def build_route_payload(
     # the "not fetched" default -> key omitted -> the client keeps its current state.
     if events is not None:
         payload["events"] = _public_event_rows(events)
-    # Real driving steps are optional: [] means routing had no usable street route;
-    # we deliberately never synthesize a direction from an address string.
-    if turns:
-        payload["turns"] = turns
+    # Real driving steps are optional: [] means routing had no usable street route.
+    # Do not let a compass-only OSRM step ("Drive southeast", "Continue") reach the
+    # cab, and always ship an array once routing was attempted so an empty live leg
+    # clears the prior maneuver rather than leaving stale turn text on screen.
+    if turns is not None:
+        payload["turns"] = [
+            step for step in turns if isinstance(step, dict)
+            and isinstance(step.get("street"), str) and step["street"].strip()
+            and isinstance(step.get("instruction"), str)
+            and step["street"].strip().casefold() in step["instruction"].casefold()
+        ]
+    # Operational fleet sales; omitted altogether when Square or Jobber is unreachable.
+    # `signedIn` is resolved on the server, never guessed by the browser.
+    if ticker is not None:
+        payload["ticker"] = ticker
     if coached:
         grade = _DEFAULT_GRADE
         if next_stop and isinstance(next_stop.get("grade"), int) and next_stop["grade"] in (1, 2):

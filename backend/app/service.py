@@ -44,6 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import assignment, flagstate, geotab, jobber, liveness, profiles, roster, routes
 from . import events as events_mod
+from . import scorecard
 from .config import flag_config, mapbox_token
 from .db import DEFAULT_SCHEMA, connect
 from .motion import phase_for_fix
@@ -241,6 +242,7 @@ def do_confirm_assignment(req: ConfirmAssignmentRequest, schema: str = DEFAULT_S
                 route_count=live["route_count"], up_next=live.get("up_next"),
                 map_nav=live.get("map"), mapbox_token=mapbox_token() or None,
                 turns=live.get("turns"),
+                ticker=scorecard.live_ticker(jobber.name_from_driver_id(driver_id) or ""),
             )
         conn.commit()
     return {"session_id": req.session_id, **payload}
@@ -333,9 +335,10 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             # locked "-> [] (panel hidden)" contract) and never raises; the try/except is
             # belt-and-braces so a Jobber hiccup never crashes the poll. A crash here is a
             # failure -> [] (clear the panel per the contract), never None.
+            driver_name_for_events = ""
             try:
-                driver_name_for_events = jobber.name_from_driver_id(driver_id)
-                today_events = events_mod.get_today_events(driver_name_for_events or "")
+                driver_name_for_events = jobber.name_from_driver_id(driver_id) or ""
+                today_events = events_mod.get_today_events(driver_name_for_events)
             except Exception:
                 today_events = []
             live = routes.resolve_live_route(
@@ -400,6 +403,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 # Today's ONE_OFF Jobber events (operational, both modes identical).
                 events=today_events,
                 turns=live.get("turns"),
+                ticker=scorecard.live_ticker(driver_name_for_events or ""),
             )
         # The normal poll is read-only. A confirmed physical dwell is the one allowed
         # forward-cursor transition, so commit only when that state was persisted.
