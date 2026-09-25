@@ -41,10 +41,9 @@ GEM_RATE_MULT = 1.5
 # client paints these REAL forward stops (or hides the list) — never a fake queue.
 UP_NEXT_MAX = 4
 
-# How many upcoming stops the LIVE MAP route line snakes through (brief: "next
-# ~4-6 upcoming stops"). The line is truck -> current stop -> the next few, so the
-# driver sees the road-following breadcrumbs for the leg they're on plus what's ahead.
-MAP_LINE_STOPS = 6
+# The driving line goes truck -> the NEXT stop only. Extra pins ahead made the
+# screen look like a 5-stop list and hid the turn to the stop they are on.
+MAP_LINE_STOPS = 1
 
 
 def _is_school_address(address: object) -> bool:
