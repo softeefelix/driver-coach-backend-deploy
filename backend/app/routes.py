@@ -464,11 +464,11 @@ def build_map_nav(
     if isinstance(heading, (int, float)):
         truck["heading"] = float(heading)
 
-    # The upcoming stops: the current stop the truck is heading to, then the next
-    # few (the same forward set the Up-Next list uses), each with coords for a pin.
-    upcoming = stops[current_idx: current_idx + MAP_LINE_STOPS]
+    # Pins show the rest of the confirmed route. The blue line is only the leg
+    # to the next stop — drawing it through every pin made the screen a 5-stop list.
+    remaining = stops[current_idx:]
     pins = []
-    for s in upcoming:
+    for s in remaining:
         lat, lng = s.get("lat"), s.get("lng")
         if lat is None or lng is None:
             continue
@@ -476,15 +476,13 @@ def build_map_nav(
             {
                 "lng": float(lng),
                 "lat": float(lat),
-                # friendly NAME = STREET (not house numbers), same helper as nextStop.
                 "name": friendly_stop_name(s.get("address")) or "Stop",
                 "order": s.get("stop_order"),
             }
         )
 
-    # The road-following line snakes from the truck THROUGH the upcoming stops.
-    # Waypoints are (lat,lng); street_route returns Mapbox-style [lng,lat] points.
-    waypoints = [(tlat, tlng)] + [(p["lat"], p["lng"]) for p in pins]
+    next_pin = pins[:1]
+    waypoints = [(tlat, tlng)] + [(p["lat"], p["lng"]) for p in next_pin]
     # Master Route's drive-path (or direct OSRM when its base is unavailable) owns
     # the road geometry. Do not ask Mapbox for a shortest path through the pins and
     # never substitute a straight chord when no street route is available.
