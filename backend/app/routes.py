@@ -41,9 +41,9 @@ GEM_RATE_MULT = 1.5
 # client paints these REAL forward stops (or hides the list) — never a fake queue.
 UP_NEXT_MAX = 4
 
-# The driving line goes truck -> the NEXT stop only. Extra pins ahead made the
-# screen look like a 5-stop list and hid the turn to the stop they are on.
-MAP_LINE_STOPS = 1
+# Map pins deliberately have NO display cap: the driver needs every remaining stop
+# on the confirmed route, in its real order.  The blue road geometry is separately
+# limited to the advised next leg inside build_map_nav(), never by slicing pins.
 
 
 def _is_school_address(address: object) -> bool:
@@ -356,6 +356,23 @@ def ordered_stops_for_route(cur, route_cluster_id: int, dow: str) -> list[dict]:
     return out
 
 
+def following_unserved_stop(
+    plan: list[dict], current_order: int, served_orders: set[int], skipped_orders: set[int],
+) -> Optional[dict]:
+    """The first remaining planned pin after a currently parked pin.
+
+    This is intentionally a frozen-plan cursor, not a proximity or routing choice:
+    while a driver is in Park, ``Here`` is the current pin and ``Next`` must be the
+    following unserved planned pin rather than the same stop or an earlier one.
+    """
+    for stop in sorted(plan or [], key=lambda row: row.get("stop_order", 0)):
+        order = stop.get("stop_order") if isinstance(stop, dict) else None
+        if (isinstance(order, int) and order > current_order
+                and order not in served_orders and order not in skipped_orders):
+            return dict(stop)
+    return None
+
+
 def _grade_stop(cur, stop: dict, route_cluster_id: int, dow: str) -> dict:
     """Attach the REAL Master Route grade (1|2 + reason) to a resolved stop."""
     bench = route_benchmark(cur, route_cluster_id, dow)
@@ -437,16 +454,24 @@ def build_map_nav(
     position: Optional[dict],
     stops: list[dict],
     current_idx: int,
+    *,
+    driven: Optional[list[dict]] = None,
+    driven_stops: Optional[list[dict]] = None,
 ) -> Optional[dict]:
-    """The LIVE MAP nav object (brief §BACKEND): the truck position + the road-
-    following route line + the upcoming stop pins. PURE navigation, shown IDENTICALLY
-    to every driver (disguise-safe: coordinates ARE allowed inside this map object,
-    but it carries NO grade/coached/voice — it is byte-identical coached vs nominal).
+    """The LIVE MAP nav object: the truck, the advised-leg line, and remaining pins.
+
+    The map is pure navigation, byte-identical for coached and nominal drivers.  It
+    deliberately sends EVERY remaining confirmed-route stop (with its real order) as
+    a pin, while the blue road geometry is ONLY truck -> next stop.  The yellow path
+    overlays are observed Geotab breadcrumbs plus gear-126 Park transitions, never
+    inferred from speed or fabricated when telemetry is empty.
 
     Shape:
       { truck: {lat,lng, heading?},
-        line:  [[lng,lat], ...],          # Mapbox geojson, truck -> next ~4-6 stops
-        stops: [{lng,lat,name,order}, ...] }
+        line: [[lng,lat], ...],           # street geometry, truck -> next stop only
+        stops: [{lng,lat,name,order}, ...],
+        driven: [{lng,lat}, ...],
+        drivenStops: [{lng,lat,gear:126}, ...] }
 
     Graceful degrade (brief §4): with NO live position we omit the whole map (the
     client falls back to the simple view). With a position but no usable Mapbox line
@@ -464,11 +489,11 @@ def build_map_nav(
     if isinstance(heading, (int, float)):
         truck["heading"] = float(heading)
 
-    # Pins show the rest of the confirmed route. The blue line is only the leg
-    # to the next stop — drawing it through every pin made the screen a 5-stop list.
-    remaining = stops[current_idx:]
+    # Every remaining route stop gets a numbered pin.  The line is deliberately a
+    # separate concern below: limiting its route request must NEVER hide later pins.
+    upcoming = stops[current_idx:]
     pins = []
-    for s in remaining:
+    for s in upcoming:
         lat, lng = s.get("lat"), s.get("lng")
         if lat is None or lng is None:
             continue
@@ -476,13 +501,16 @@ def build_map_nav(
             {
                 "lng": float(lng),
                 "lat": float(lat),
+                # friendly NAME = STREET (not house numbers), same helper as nextStop.
                 "name": friendly_stop_name(s.get("address")) or "Stop",
                 "order": s.get("stop_order"),
             }
         )
 
-    next_pin = pins[:1]
-    waypoints = [(tlat, tlng)] + [(p["lat"], p["lng"]) for p in next_pin]
+    # The road-following line is only the leg TO THE NEXT stop.  All remaining pins
+    # stay visible above, but Mapbox/OSRM must not route the blue line through them.
+    # Waypoints are (lat,lng); street_route returns Mapbox-style [lng,lat] points.
+    waypoints = [(tlat, tlng)] + [(p["lat"], p["lng"]) for p in pins[:1]]
     # Master Route's drive-path (or direct OSRM when its base is unavailable) owns
     # the road geometry. Do not ask Mapbox for a shortest path through the pins and
     # never substitute a straight chord when no street route is available.
@@ -494,23 +522,17 @@ def build_map_nav(
         line = traced.get("line")
         line_source = traced.get("source")
 
-    nav: dict = {"truck": truck, "stops": pins}
+    # Empty trails remain explicit empty arrays: the client clears stale pellets and
+    # never invents a path.  `drivenStops` comes only from Geotab gear 126 Park.
+    nav: dict = {
+        "truck": truck,
+        "stops": pins,
+        "driven": driven if isinstance(driven, list) else [],
+        "drivenStops": driven_stops if isinstance(driven_stops, list) else [],
+    }
     if isinstance(line, list) and line:
         nav["line"] = line
         nav["line_source"] = line_source or "drive-path"
-    # Yellow review overlay. The blue line stays the prescribed route. Crumbs are
-    # the path the truck actually drove; stops are transmission-Park events (gear
-    # 126), not a speed-zero dwell. A Geotab miss omits both — never a fake trail.
-    try:
-        from .driven_path import driven_path
-        driven = driven_path(position.get("device_id"))
-    except Exception:
-        driven = None
-    if isinstance(driven, dict):
-        if driven.get("crumbs"):
-            nav["driven"] = driven["crumbs"]
-        if driven.get("stops"):
-            nav["drivenStops"] = driven["stops"]
     return nav
 
 
@@ -584,7 +606,7 @@ def resolve_live_route(
     # Import here to avoid any import-order coupling at module load; both are
     # READ-ONLY wiring layers over the same reference cores.
     from . import geotab, geotab_live, motion
-    from .refcore import DRIVING
+    from .refcore import DRIVING, PARKED
 
     dow = dow or dow_name()
 
@@ -596,6 +618,24 @@ def resolve_live_route(
     # the live source is what actually places a moving truck in the right city.
     # Read ONCE, up front, so route selection AND nearest-stop see the same position.
     position = read_truck_position(cur, truck_no, truck_id=truck_id)
+    if position is not None and truck_id and not position.get("device_id"):
+        # The log-record fallback has no device id in its row shape, but this route
+        # already resolved the truck's authoritative Geotab device above.
+        position = {**position, "device_id": truck_id}
+    # Park is transmission gear 126, not a zero-speed dwell.  Read its GPS-joined
+    # transitions once per route resolution; a Geotab failure yields an empty list
+    # and never fabricates a Park-at-pin state.
+    driven = []
+    driven_stops = []
+    if position and position.get("device_id"):
+        try:
+            from .driven_path import driven_path
+            path = driven_path(position["device_id"])
+            driven = path.get("driven") or []
+            driven_stops = path.get("stops") or []
+        except Exception:
+            driven = []
+            driven_stops = []
 
     # Follow the caller's cluster when given (the session's stored route, itself picked
     # position-first at sign-in); otherwise select position-first here too, so a
@@ -622,6 +662,16 @@ def resolve_live_route(
     advice = advise_plan(stops, served_orders=served_orders or set(), skipped_orders=skipped_orders or set(),
                          events=events or [], now_minutes=now)
     stop = dict(advice["next_stop"]) if advice["next_stop"] else None
+    parked_stop = None
+    if position and driven_stops:
+        try:
+            from .driven_path import parked_plan_stop
+            parked_stop = parked_plan_stop(
+                advice["plan"], driven_stops,
+                now_lat=position.get("lat"), now_lng=position.get("lng"),
+            )
+        except Exception:
+            parked_stop = None
     legacy_index = None
     # Compatibility only for callers that have not confirmed a session yet: preserve
     # the old position display. Confirmed sessions always pass frozen_plan and therefore
@@ -642,7 +692,9 @@ def resolve_live_route(
         stop["advice_reason"] = advice["reason"]
 
     phase = DRIVING
-    if truck_id and stop is not None and stop.get("kind") != "event":
+    if parked_stop is not None:
+        phase = PARKED
+    elif truck_id and stop is not None and stop.get("kind") != "event":
         fix = geotab.latest_fix(cur, truck_id, stop.get("lat"), stop.get("lng"))
         phase = motion.phase_for_fix(fix, prior_phase=DRIVING)
 
@@ -669,12 +721,18 @@ def resolve_live_route(
     if position and stop and stop.get("lat") is not None and stop.get("lng") is not None:
         from . import eta as _eta
         turns = _eta.route_steps(truck_no, [(position["lat"], position["lng"]), (stop["lat"], stop["lng"])])
-    nav = build_map_nav(truck_no, position, nav_stops, 0)
+    # Keep the map assembler's established four-argument seam intact (tests and
+    # callers inject it); attach observed overlays only after it returns.
+    map_nav = build_map_nav(truck_no, position, nav_stops, 0)
+    if isinstance(map_nav, dict):
+        map_nav["driven"] = driven
+        map_nav["drivenStops"] = driven_stops
+
     return {"dow": dow, "route_cluster_id": route_id, "next_stop": stop,
             "phase": phase, "shift_phase": shift_phase, "route_count": route_count,
             "total_stops": total, "up_next": up_next, "advice_reason": advice["reason"],
-            "turns": turns, "map": nav,
-            "driven_stops": (nav or {}).get("drivenStops") or [],
-            # The whole frozen plan, not the one stop on screen. A Park can clear
-            # a pin the advisor has not reached yet.
+            "turns": turns, "map": map_nav,
+            # Server-internal Park context.  build_route_payload exposes only the
+            # resolved Here pin, never gear data or a coaching signal.
+            "parked_stop": parked_stop, "driven_stops": driven_stops,
             "match_plan": advice["plan"]}

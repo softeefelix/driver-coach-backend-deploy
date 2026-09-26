@@ -64,7 +64,7 @@ _FORBIDDEN_COACH = ("voice", "arrival_voice", "coached", "grade_reason")
 # `map` object must be byte-identical between a coached and a nominal sign-in for the
 # same truck. The grade/coached/voice keys above stay forbidden everywhere, and grade
 # still rides ONLY in the coach bundle. `map` carries none of the forbidden keys.
-_MAP_ALLOWED_KEYS = ("truck", "line", "stops")
+_MAP_ALLOWED_KEYS = ("truck", "line", "stops", "driven", "drivenStops")
 
 # EVENTS (Part-2 Jobber feed, Felix locked 2026-09-17): today's ONE_OFF booked gigs
 # for the signed-in driver. This is an OPERATIONAL fact of the truck's day, shown
@@ -444,7 +444,13 @@ def build_route_payload(
     # falls back to the simple next-stop focal. It may carry coordinates but NEVER a
     # grade/coached/voice key (assert_disguise_safe re-checks this below).
     if map_nav:
-        payload["map"] = map_nav
+        # Validate the complete nav object BEFORE projection: a forbidden coaching
+        # key must fail closed, never disappear silently because it is not allowed.
+        assert_disguise_safe({"map": map_nav})
+        # This is the wire boundary: preserve only the approved navigation fields.
+        # In particular, do not lose actual driven breadcrumbs or Park-126 pellets
+        # after build_map_nav has already constructed them.
+        payload["map"] = {key: map_nav[key] for key in _MAP_ALLOWED_KEYS if key in map_nav}
     # The PUBLIC Mapbox token for the client's map (pk. — safe to expose). Omitted
     # when unset so the client just falls back to the simple view.
     if mapbox_token:
