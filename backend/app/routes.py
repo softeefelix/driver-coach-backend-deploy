@@ -455,29 +455,24 @@ def build_map_nav(
     stops: list[dict],
     current_idx: int,
     *,
+    route_cluster_id: Optional[int] = None,
+    dow: Optional[str] = None,
     driven: Optional[list[dict]] = None,
     driven_stops: Optional[list[dict]] = None,
 ) -> Optional[dict]:
-    """The LIVE MAP nav object: the truck, the advised-leg line, and remaining pins.
+    """The LIVE MAP nav object: truck, remaining pins, and the active snake leg.
 
-    The map is pure navigation, byte-identical for coached and nominal drivers.  It
+    The map is pure navigation, byte-identical for coached and nominal drivers. It
     deliberately sends EVERY remaining confirmed-route stop (with its real order) as
-    a pin, while the blue road geometry is ONLY truck -> next stop.  The yellow path
-    overlays are observed Geotab breadcrumbs plus gear-126 Park transitions, never
-    inferred from speed or fabricated when telemetry is empty.
+    a pin. For a confirmed route, the blue geometry is the stored Master Route trace
+    section from the driver's current point to the advised pin. That keeps every
+    intermediate neighbourhood block even when it has no planned pin. Yellow overlays
+    remain observed Geotab breadcrumbs plus gear-126 Park transitions.
 
-    Shape:
-      { truck: {lat,lng, heading?},
-        line: [[lng,lat], ...],           # street geometry, truck -> next stop only
-        stops: [{lng,lat,name,order}, ...],
-        driven: [{lng,lat}, ...],
-        drivenStops: [{lng,lat,gear:126}, ...] }
-
-    Graceful degrade (brief §4): with NO live position we omit the whole map (the
-    client falls back to the simple view). With a position but no usable Mapbox line
-    (no token / timeout / error) we omit ONLY `line` and still ship truck + pins.
-    Returns None to omit the map entirely. Coordinates here are server data the map
-    NEEDS; they never carry coaching state.
+    A legacy caller without cluster/day may still use the old road adapter. A confirmed
+    caller never takes that shortest-path fallback: no usable master trace means no blue
+    line, never an invented shortcut. `_turn_waypoints` is internal-only and is removed
+    at the payload boundary after it guides street-named navigation steps.
     """
     # No live position -> no map at all (client falls back to the simple view).
     if not position or position.get("lat") is None or position.get("lng") is None:
@@ -507,32 +502,35 @@ def build_map_nav(
             }
         )
 
-    # The road-following line is only the leg TO THE NEXT stop.  All remaining pins
-    # stay visible above, but Mapbox/OSRM must not route the blue line through them.
-    # Waypoints are (lat,lng); street_route returns Mapbox-style [lng,lat] points.
-    waypoints = [(tlat, tlng)] + [(p["lat"], p["lng"]) for p in pins[:1]]
-    # Master Route's drive-path (or direct OSRM when its base is unavailable) owns
-    # the road geometry. Do not ask Mapbox for a shortest path through the pins and
-    # never substitute a straight chord when no street route is available.
-    from .street_route import advised_leg
-    traced = advised_leg(waypoints)
-    line = None
-    line_source = None
-    if isinstance(traced, dict):
-        line = traced.get("line")
-        line_source = traced.get("source")
+    # The blue line is only the leg TO THE advised stop; later pins remain visible
+    # independently. Confirmed sessions use the stored Geotab master trace for this
+    # cluster/day, so unpinned blocks between two route stops stay on the line. Never
+    # fall back to a shortest path when that source is unavailable.
+    next_waypoint = (pins[0]["lat"], pins[0]["lng"]) if pins else None
+    traced = None
+    if next_waypoint is not None:
+        from . import street_route
+        if route_cluster_id is not None and dow:
+            traced = street_route.confirmed_cluster_leg(route_cluster_id, dow, (tlat, tlng), next_waypoint)
+        else:
+            # Compatibility seam for pre-confirmation callers only. `resolve_live_route`
+            # always supplies a confirmed cluster and day, so production never routes
+            # a neighbourhood snake through this shortcut-capable adapter.
+            traced = street_route.advised_leg([(tlat, tlng), next_waypoint])
 
     # Empty trails remain explicit empty arrays: the client clears stale pellets and
-    # never invents a path.  `drivenStops` comes only from Geotab gear 126 Park.
+    # never invents a path. `drivenStops` comes only from Geotab gear 126 Park.
     nav: dict = {
         "truck": truck,
         "stops": pins,
         "driven": driven if isinstance(driven, list) else [],
         "drivenStops": driven_stops if isinstance(driven_stops, list) else [],
     }
-    if isinstance(line, list) and line:
-        nav["line"] = line
-        nav["line_source"] = line_source or "drive-path"
+    if isinstance(traced, dict) and isinstance(traced.get("line"), list) and traced["line"]:
+        nav["line"] = traced["line"]
+        turn_waypoints = traced.get("turn_waypoints")
+        if isinstance(turn_waypoints, list) and len(turn_waypoints) >= 2:
+            nav["_turn_waypoints"] = turn_waypoints
     return nav
 
 
@@ -717,14 +715,18 @@ def resolve_live_route(
     up_next = [{"name": friendly_stop_name(s.get("address")) or s.get("title") or "Next stop", "arrive": s.get("arrive")}
                for s in nav_stops[1:1 + UP_NEXT_MAX]]
 
+    # The confirmed-cluster trace supplies both the blue snake and the geometry
+    # anchors for the cab's street-named steps. A line-less master trace means no
+    # turn text rather than directions from a different shortest-path calculation.
+    map_nav = build_map_nav(
+        truck_no, position, nav_stops, 0, route_cluster_id=route_id, dow=dow,
+    )
     turns = []
-    if position and stop and stop.get("lat") is not None and stop.get("lng") is not None:
-        from . import eta as _eta
-        turns = _eta.route_steps(truck_no, [(position["lat"], position["lng"]), (stop["lat"], stop["lng"])])
-    # Keep the map assembler's established four-argument seam intact (tests and
-    # callers inject it); attach observed overlays only after it returns.
-    map_nav = build_map_nav(truck_no, position, nav_stops, 0)
     if isinstance(map_nav, dict):
+        turn_waypoints = map_nav.pop("_turn_waypoints", None)
+        if isinstance(turn_waypoints, list) and len(turn_waypoints) >= 2:
+            from . import eta as _eta
+            turns = _eta.route_steps(truck_no, turn_waypoints)
         map_nav["driven"] = driven
         map_nav["drivenStops"] = driven_stops
 
