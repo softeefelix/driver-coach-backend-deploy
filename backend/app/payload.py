@@ -28,6 +28,7 @@ import datetime
 from typing import Optional
 
 from .refcore import ResolvedFlags
+from .refuel import Reminder
 
 # Verbatim from app/src/core/grade.js GRADE (the whole coached vocabulary).
 _GRADE_COPY = {
@@ -385,6 +386,7 @@ def build_route_payload(
     turns: Optional[list] = None,
     ticker: Optional[list] = None,
     here_stop: Optional[dict] = None,
+    refuel_reminder: Optional[Reminder] = None,
 ) -> dict:
     """The disguise-safe body for GET /driver-coach/v1/route (the live poll).
 
@@ -408,6 +410,9 @@ def build_route_payload(
                              ONLY inside the coach bundle (present-iff-coached), so a
                              nominal poll carries NO grade value to diff. Mirrors the
                              signin disguise boundary exactly.
+      - banner               an optional existing iPad banner-channel command. The
+                             refuel policy supplies only {kind:"refuel"}; its approved
+                             client copy and acknowledgement behavior stay client-owned.
 
     A NOMINAL session's poll has no `coach` key — identical disguise contract as
     build_session_payload. assert_disguise_safe re-checks the top-level forbidden set
@@ -426,6 +431,10 @@ def build_route_payload(
         },
         "phase": phase,
     }
+    # The existing iPad banner channel consumes this exact seam shape. The refuel
+    # policy creates a Reminder only; this boundary serializes it and never sends mail.
+    if refuel_reminder is not None:
+        payload["banner"] = {"kind": refuel_reminder.event}
     if shift_phase is not None:
         payload["shiftPhase"] = shift_phase
     if route_count is not None:

@@ -50,6 +50,7 @@ from .db import DEFAULT_SCHEMA, connect
 from .motion import phase_for_fix
 from .payload import build_route_payload, build_session_payload
 from .refcore import DRIVING, resolve_flags
+from .refuel import RefuelNightBook, Reminder
 
 app = FastAPI(title="Driver Coach v1", version="1.0.0")
 
@@ -298,6 +299,25 @@ def do_roster(schema: str = DEFAULT_SCHEMA) -> dict:
     return body
 
 
+def refuel_reminder_for_route_poll(
+    truck_no: int,
+    *,
+    now: Optional[datetime.datetime] = None,
+    refuel_confirmed: bool = False,
+) -> Optional[Reminder]:
+    """Return the current poll's refuel-banner command, never an email action.
+
+    A route poll is a state snapshot, so a still-unconfirmed truck receives the
+    reminder on each eligible poll rather than only the first poll a process observes.
+    The policy's 11:59 PM draft method is deliberately not called here.
+    """
+    if refuel_confirmed:
+        return None
+    current = now or datetime.datetime.now(datetime.timezone.utc)
+    reminders = RefuelNightBook().due_reminders([truck_no], current)
+    return reminders[0] if reminders else None
+
+
 def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
     """The live route state for a session (the ~15-20s poll). READ-ONLY.
 
@@ -404,6 +424,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 events=today_events,
                 turns=live.get("turns"),
                 ticker=scorecard.live_ticker(driver_name_for_events or ""),
+                refuel_reminder=refuel_reminder_for_route_poll(truck_no),
             )
         # The normal poll is read-only. A confirmed physical dwell is the one allowed
         # forward-cursor transition, so commit only when that state was persisted.
