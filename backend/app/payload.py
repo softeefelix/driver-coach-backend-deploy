@@ -265,6 +265,11 @@ def build_next_stop(
     if isinstance(stop.get("advice_reason"), str) and stop["advice_reason"]:
         ns["adviceReason"] = stop["advice_reason"]
     ns.update(_live_eta_fields(eta_src))   # etaMin/distMi/arriveEst — only when present
+    if 'reason_code' in stop:
+        ns.update(reason=stop.get('advice_reason'), reasonCode=stop.get('reason_code'),
+                  anchor=bool(stop.get('anchor')), due=fmt_clock_ampm(stop.get('due')),
+                  decisionAuditId=stop.get('decision_audit_id'),
+                  anchorContext=stop.get('anchor_context'))
     return ns
 
 

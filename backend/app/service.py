@@ -45,6 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import assignment, flagstate, geotab, jobber, liveness, profiles, roster, routes
 from . import events as events_mod
 from . import scorecard
+from . import school_slack
 from .config import flag_config, mapbox_token
 from .db import DEFAULT_SCHEMA, connect
 from .motion import phase_for_fix
@@ -236,7 +237,8 @@ def do_confirm_assignment(req: ConfirmAssignmentRequest, schema: str = DEFAULT_S
                 (req.route_cluster_id, json.dumps(frozen_plan, default=str), req.session_id),
             )
             live = routes.resolve_live_route(cur, truck_no, route_cluster_id=req.route_cluster_id,
-                                             frozen_plan=frozen_plan, events=today_events)
+                                             frozen_plan=frozen_plan, events=today_events,
+                                             session_id=req.session_id, schema=schema)
             payload = build_route_payload(
                 next_stop=live["next_stop"], route_cluster_id=live["route_cluster_id"],
                 phase=live["phase"], coached=bool(coached), shift_phase=live["shift_phase"],
@@ -255,7 +257,7 @@ def do_stop_outcome(req: StopOutcomeRequest, schema: str = DEFAULT_SCHEMA) -> di
         raise ValueError("outcome must be done or skip")
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT plan_snapshot, served_stop_orders, skipped_stop_orders FROM driver_coach_session WHERE session_id=%s", (req.session_id,))
+            cur.execute("SELECT plan_snapshot, served_stop_orders, skipped_stop_orders FROM driver_coach_session WHERE session_id=%s FOR UPDATE", (req.session_id,))
             row = cur.fetchone()
             if row is None:
                 raise KeyError(f"unknown session_id: {req.session_id}")
@@ -266,6 +268,11 @@ def do_stop_outcome(req: StopOutcomeRequest, schema: str = DEFAULT_SCHEMA) -> di
             from .advisor import advise_plan
             current = advise_plan(plan, served_orders=served, skipped_orders=skipped,
                                   now_minutes=datetime.datetime.now().hour * 60 + datetime.datetime.now().minute)["next_stop"]
+            if school_slack.enabled():
+                from .decision_store import load
+                state = load(cur, req.session_id, schema)
+                current = next((s for s in plan if school_slack.identity(s) == state.get('choice')
+                                and s.get('stop_order') not in served | skipped), None)
             if not current or current.get("stop_order") != req.stop_order:
                 raise ValueError("outcome must target the advised current planned stop")
             (served if req.outcome == "done" else skipped).add(req.stop_order)
@@ -331,7 +338,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT truck_no, coached, route_cluster_id, driver_id, plan_snapshot, "
-                "served_stop_orders, skipped_stop_orders FROM driver_coach_session WHERE session_id = %s",
+                "served_stop_orders, skipped_stop_orders FROM driver_coach_session WHERE session_id = %s FOR UPDATE",
                 (session_id,),
             )
             row = cur.fetchone()
@@ -364,6 +371,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             live = routes.resolve_live_route(
                 cur, truck_no, route_cluster_id=route_cluster_id, frozen_plan=frozen_plan,
                 served_orders=served_orders, skipped_orders=skipped_orders, events=today_events,
+                session_id=session_id, schema=schema,
             )
             # A deliberate Done/Skip is the normal advance path, but a truck that has
             # actually dwelled at the advised frozen-plan pin must advance too. The
@@ -373,6 +381,9 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             arrived = live.get("next_stop") or {}
             arrived_order = arrived.get("stop_order")
             if (live.get("phase") == "parked" and isinstance(arrived_order, int)
+                    and (not school_slack.enabled() or
+                         ((live.get('parked_stop') or {}).get('stop_order') == arrived_order
+                          and arrived.get('kind') not in {'school', 'event'}))
                     and arrived_order not in served_orders and arrived_order not in skipped_orders):
                 served_orders.add(arrived_order)
                 auto_advanced = True
@@ -387,6 +398,10 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                     plan_rows, live["driven_stops"],
                     now_lat=truck["lat"], now_lng=truck["lng"],
                 ):
+                    if school_slack.enabled() and any(s.get('stop_order') == order and
+                            (s.get('kind') in {'school', 'event'} or school_slack.school_name(s.get('address')))
+                            for s in plan_rows):
+                        continue  # Early Park must not complete a timed anchor.
                     if order not in served_orders and order not in skipped_orders:
                         served_orders.add(order)
                         auto_advanced = True
@@ -394,6 +409,8 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 # driven past. The list stays the list. West 39th stays on the plan;
                 # it stops being Next once the truck is at a later pin.
                 for order in passed_orders(plan_rows, now_lat=truck["lat"], now_lng=truck["lng"]):
+                    if school_slack.enabled():
+                        continue  # Later filler must not auto-skip earlier anchors.
                     if order not in served_orders and order not in skipped_orders:
                         skipped_orders.add(order)
                         auto_advanced = True
@@ -406,6 +423,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 live = routes.resolve_live_route(
                     cur, truck_no, route_cluster_id=route_cluster_id, frozen_plan=frozen_plan,
                     served_orders=served_orders, skipped_orders=skipped_orders, events=today_events,
+                    session_id=session_id, schema=schema,
                 )
             payload = build_route_payload(
                 next_stop=live["next_stop"],
@@ -428,7 +446,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             )
         # The normal poll is read-only. A confirmed physical dwell is the one allowed
         # forward-cursor transition, so commit only when that state was persisted.
-        if auto_advanced:
+        if auto_advanced or school_slack.enabled():
             conn.commit()
         else:
             conn.rollback()

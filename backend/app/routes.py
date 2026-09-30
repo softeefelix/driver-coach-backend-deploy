@@ -580,6 +580,9 @@ def resolve_live_route(
     skipped_orders: Optional[set[int]] = None,
     events: Optional[list[dict]] = None,
     now_minutes: Optional[int] = None,
+    session_id: Optional[str] = None,
+    schema: str = 'driver_coach',
+    chooser_state: Optional[dict] = None,
 ) -> dict:
     """Follow the truck along its ordered route and return its CURRENT state.
 
@@ -651,7 +654,9 @@ def resolve_live_route(
     # still resolve the ordered Master Route once, but GPS never selects an index.
     stops = frozen_plan if frozen_plan is not None else ordered_stops_for_route(cur, route_id, dow)
     total = len(stops)
-    if total == 0:
+    from . import school_slack
+    use_chooser = school_slack.enabled() and frozen_plan is not None
+    if total == 0 and not (use_chooser and events):
         return {"dow": dow, "route_cluster_id": route_id, "next_stop": None,
                 "phase": DRIVING, "shift_phase": "plan", "route_count": None, "total_stops": 0}
 
@@ -659,6 +664,34 @@ def resolve_live_route(
     now = datetime.datetime.now().astimezone().hour * 60 + datetime.datetime.now().astimezone().minute if now_minutes is None else now_minutes
     advice = advise_plan(stops, served_orders=served_orders or set(), skipped_orders=skipped_orders or set(),
                          events=events or [], now_minutes=now)
+    if use_chooser:
+        from . import eta, decision_store
+        from zoneinfo import ZoneInfo
+        if now_minutes is None:
+            pt = datetime.datetime.now(ZoneInfo('America/Los_Angeles'))
+            now = pt.hour * 60 + pt.minute
+        state = chooser_state or {}
+        if session_id:
+            state = decision_store.load(cur, session_id, schema)
+        def travel(origin, destination):
+            # Include BOTH endpoints in the cache key: filler -> school is not
+            # truck -> school. No straight-line or average-speed substitution.
+            result = eta.live_eta(truck_no,
+                ('school-slack', origin['lat'], origin['lng'], destination['lat'], destination['lng']),
+                origin['lat'], origin['lng'], destination['lat'], destination['lng'])
+            return result.get('eta_min') if result else None
+        try:
+            advice = school_slack.choose(stops, served_orders=served_orders or set(),
+                skipped_orders=skipped_orders or set(), events=events or [], now_minutes=now,
+                position=position, travel=travel, previous=state)
+        except ValueError:
+            # Invalid operator configuration fails closed to the unchanged policy.
+            advice['reason_code'] = 'eta_unavailable'
+        if session_id and 'audit' in advice:
+            advice['audit_id'] = decision_store.append(cur, session_id, schema, advice)
+        if chooser_state is not None and 'state' in advice:
+            chooser_state.clear()
+            chooser_state.update(advice['state'])
     stop = dict(advice["next_stop"]) if advice["next_stop"] else None
     parked_stop = None
     if position and driven_stops:
@@ -688,6 +721,12 @@ def resolve_live_route(
         _attach_live_eta(cur, stop, truck_no, position=position)
     if stop is not None:
         stop["advice_reason"] = advice["reason"]
+        if use_chooser:
+            stop['reason_code'] = advice.get('reason_code')
+            stop['anchor'] = stop.get('kind') in {'school', 'event'}
+            stop['due'] = stop.get('arrive') if stop['anchor'] else None
+            stop['decision_audit_id'] = advice.get('audit_id')
+            stop['anchor_context'] = advice.get('anchor_context')
 
     phase = DRIVING
     if parked_stop is not None:
