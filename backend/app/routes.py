@@ -583,6 +583,7 @@ def resolve_live_route(
     session_id: Optional[str] = None,
     schema: str = 'driver_coach',
     chooser_state: Optional[dict] = None,
+    reset_chooser: bool = False,
 ) -> dict:
     """Follow the truck along its ordered route and return its CURRENT state.
 
@@ -671,14 +672,27 @@ def resolve_live_route(
             pt = datetime.datetime.now(ZoneInfo('America/Los_Angeles'))
             now = pt.hour * 60 + pt.minute
         state = chooser_state or {}
-        if session_id:
+        if session_id and not reset_chooser:
             state = decision_store.load(cur, session_id, schema)
+        import hashlib
+        import json
+        scope = hashlib.sha256(json.dumps(
+            [route_id, stops, datetime.datetime.now(ZoneInfo('America/Los_Angeles')).date().isoformat()],
+            sort_keys=True, default=str).encode()).hexdigest()
+        if state.get('scope') != scope:
+            state = {}
+        import time
+        deadline = time.monotonic() + 4.0
         def travel(origin, destination):
             # Include BOTH endpoints in the cache key: filler -> school is not
             # truck -> school. No straight-line or average-speed substitution.
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                return None
             result = eta.live_eta(truck_no,
                 ('school-slack', origin['lat'], origin['lng'], destination['lat'], destination['lng']),
-                origin['lat'], origin['lng'], destination['lat'], destination['lng'])
+                origin['lat'], origin['lng'], destination['lat'], destination['lng'],
+                timeout_s=budget)
             return result.get('eta_min') if result else None
         try:
             advice = school_slack.choose(stops, served_orders=served_orders or set(),
@@ -687,6 +701,8 @@ def resolve_live_route(
         except ValueError:
             # Invalid operator configuration fails closed to the unchanged policy.
             advice['reason_code'] = 'eta_unavailable'
+        if 'state' in advice:
+            advice['state']['scope'] = scope
         if session_id and 'audit' in advice:
             advice['audit_id'] = decision_store.append(cur, session_id, schema, advice)
         if chooser_state is not None and 'state' in advice:

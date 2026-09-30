@@ -214,7 +214,7 @@ def do_confirm_assignment(req: ConfirmAssignmentRequest, schema: str = DEFAULT_S
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT truck_no, coached, driver_id FROM driver_coach_session WHERE session_id=%s",
+                "SELECT truck_no, coached, driver_id FROM driver_coach_session WHERE session_id=%s FOR UPDATE",
                 (req.session_id,),
             )
             row = cur.fetchone()
@@ -238,7 +238,7 @@ def do_confirm_assignment(req: ConfirmAssignmentRequest, schema: str = DEFAULT_S
             )
             live = routes.resolve_live_route(cur, truck_no, route_cluster_id=req.route_cluster_id,
                                              frozen_plan=frozen_plan, events=today_events,
-                                             session_id=req.session_id, schema=schema)
+                                             session_id=req.session_id, schema=schema, reset_chooser=True)
             payload = build_route_payload(
                 next_stop=live["next_stop"], route_cluster_id=live["route_cluster_id"],
                 phase=live["phase"], coached=bool(coached), shift_phase=live["shift_phase"],

@@ -1,4 +1,5 @@
--- Run with search_path set to the already-owned named schema (driver_coach).
+-- Run with search_path set to the service's already-owned DRIVER_COACH_SCHEMA
+-- (driver_coach in production, driver_coach_test for the pilot).
 -- No CREATE SCHEMA, GRANT, role changes, or writes to public.
 DO $$
 BEGIN

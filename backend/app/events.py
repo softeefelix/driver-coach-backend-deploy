@@ -76,7 +76,7 @@ DB_CONNECT_TIMEOUT_S = 4
 
 # Cache ~5 min per (driver_lower, day_iso) — the visits query cost is high.
 _CACHE_TTL_S = 300
-_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+_cache: dict[tuple[str, str, bool], tuple[float, list[dict]]] = {}
 
 # Jobber supplies only a street + city. Geocoding happens before these rows reach
 # advise_plan so booked events can become real map pins; the total keeps sign-in/poll
@@ -91,7 +91,7 @@ _DAY_VISITS_QUERY = """
 query DayVisits($after: ISO8601DateTime!, $before: ISO8601DateTime!) {
   visits(filter: { startAt: { after: $after, before: $before } }, first: 30) {
     nodes {
-      title startAt endAt visitStatus
+      id title startAt endAt visitStatus
       property { address { street city } }
       job { jobType }
       assignedUsers { nodes { name { full } } }
@@ -164,8 +164,12 @@ def filter_and_format(nodes: list, driver_canonical: str) -> list[dict]:
             continue
         addr = (v.get("property") or {}).get("address") or {}
         address = ", ".join(p for p in (addr.get("street"), addr.get("city")) if p) or None
+        from .school_slack import enabled
+        extra = ({'id': v.get('id'), 'endTime': _fmt_pt_time(v.get('endAt'))}
+                 if enabled() else {})
         rows.append(
             {
+                **extra,
                 "title": v.get("title") or "Event",
                 "startTime": _fmt_pt_time(v.get("startAt")),
                 "address": address,
@@ -528,7 +532,8 @@ def get_today_events(
             # No identity to match -> a trusted empty result (clear the panel), not a
             # failure: there is genuinely nothing to show for an unknown driver.
             return []
-        key = (_norm(driver_canonical), day.isoformat())
+        from .school_slack import enabled
+        key = (_norm(driver_canonical), day.isoformat(), enabled())
         now = time.monotonic()
         hit = _cache.get(key)
         if hit and (now - hit[0]) < _CACHE_TTL_S:

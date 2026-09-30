@@ -1,0 +1,26 @@
+Observed final verification (2026-09-30):
+
+Command:
+cd /tmp/dc-nsi-s1/backend
+PYTHONPATH=. uv run --python 3.11 --with-requirements requirements.txt --with pgserver python -m pytest -q -s
+
+Output:
+Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s5   228Gi   160Gi    31Gi    84%    2.2M  329M    1%   /System/Volumes/Data
+.....
+Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s5   228Gi   160Gi    31Gi    84%    2.2M  329M    1%   /System/Volumes/Data
+Disposable PostgreSQL stopped and owned data directory removed
+.......................................
+44 passed in 1.45s
+
+Command:
+PYTHONPATH=. uv run --python 3.11 --with-requirements requirements.txt python scripts/replay_school_day.py
+Result: successful, six assertions; stopOrder sequence 3, 4, 2, 2, 4, null.
+
+Command: git diff --check
+Result: exit 0, no output.
+
+Prior expanded regression run: 5 failed, 28 passed in 1.71s.
+Failures: early no-fit truthful reason; ETA adapter exception; event end window;
+completed event eligibility; invalid config audit state. All resolved in final run.

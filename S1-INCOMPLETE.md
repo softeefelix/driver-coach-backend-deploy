@@ -1,4 +1,6 @@
-# S1 checkpoint — INCOMPLETE, DO NOT DEPLOY
+# S1 checkpoint — historical INCOMPLETE checkpoint
+
+Superseded by S1-HANDOFF.md in the subsequent implementation commit. This file records the prior disk-blocked attempt, not the current review status.
 
 Fresh branch forge/dc-s1-school-slack from 1ae2da5. No production writes, push, deploy, Render edits, client edits, or changes to predecessor branch.
 

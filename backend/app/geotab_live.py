@@ -153,6 +153,9 @@ def parse_device_status(
         return None
     lat, lng, dt, speed = best
     fix_age_s = 0.0
+    from .school_slack import enabled
+    if enabled() and dt is None:
+        fix_age_s = None  # Unknown time is not fresh evidence for a filler.
     if dt is not None:
         fix_age_s = round(max((now - dt).total_seconds(), 0.0), 1)
     # Geotab reports speed in km/h; the fleet's motion thresholds + geotab.latest_fix

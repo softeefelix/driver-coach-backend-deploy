@@ -1,0 +1,1942 @@
+{
+  "read_only": "on",
+  "columns": [
+    [
+      "route_timed_stops",
+      "route_cluster_id"
+    ],
+    [
+      "route_timed_stops",
+      "dow"
+    ],
+    [
+      "route_timed_stops",
+      "stop_order"
+    ],
+    [
+      "route_timed_stops",
+      "stop_cluster_id"
+    ],
+    [
+      "route_timed_stops",
+      "arrive"
+    ],
+    [
+      "route_timed_stops",
+      "leave_by"
+    ],
+    [
+      "route_timed_stops",
+      "window_start"
+    ],
+    [
+      "route_timed_stops",
+      "window_end"
+    ],
+    [
+      "route_timed_stops",
+      "exp_per_visit"
+    ],
+    [
+      "route_timed_stops",
+      "visits"
+    ],
+    [
+      "route_timed_stops",
+      "address"
+    ],
+    [
+      "route_timed_stops",
+      "generated_at"
+    ],
+    [
+      "stop_clusters",
+      "stop_cluster_id"
+    ],
+    [
+      "stop_clusters",
+      "centroid_lat"
+    ],
+    [
+      "stop_clusters",
+      "centroid_long"
+    ],
+    [
+      "stop_clusters",
+      "address"
+    ]
+  ],
+  "school_like_rows": [
+    [
+      1735,
+      "Monday",
+      8,
+      7006,
+      "Nimitz Elementary School, 545, Cheyenne Drive, Sunnyvale, Santa Clara County, California, 94087, United States",
+      "Nimitz Elementary School, 545, Cheyenne Drive, Sunnyvale, Santa Clara County, California, 94087, United States",
+      "14:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1735,
+      "Monday",
+      12,
+      9245,
+      "Stocklmeir School, 592, Dunholme Way, Sunnyvale, Santa Clara County, California, 94087, United States",
+      "Stocklmeir School, 592, Dunholme Way, Sunnyvale, Santa Clara County, California, 94087, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1736,
+      "Monday",
+      1,
+      5541,
+      "Abraham Lincoln High School, 2162, 24th Avenue, Sunset District, San Francisco, California, 94116, United States",
+      "Abraham Lincoln High School, 2162, 24th Avenue, Sunset District, San Francisco, California, 94116, United States",
+      "12:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1737,
+      "Monday",
+      5,
+      31065,
+      "El Camino High School, 1320, Mission Road, South San Francisco, San Mateo County, California, 94080, United States",
+      "El Camino High School, 1320, Mission Road, South San Francisco, San Mateo County, California, 94080, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1737,
+      "Monday",
+      9,
+      5599,
+      "El Camino High School, 1320, Mission Road, South San Francisco, San Mateo County, California, 94080, United States",
+      "El Camino High School, 1320, Mission Road, South San Francisco, San Mateo County, California, 94080, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1741,
+      "Tuesday",
+      23,
+      4410,
+      "Hillsdale High School, Fernwood Street, Laurel, San Mateo, San Mateo County, California, 94403, United States",
+      "Hillsdale High School, Fernwood Street, Laurel, San Mateo, San Mateo County, California, 94403, United States",
+      "18:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1742,
+      "Tuesday",
+      9,
+      5793,
+      "Dayton Elementary School, 1500, Dayton Avenue, San Leandro, Alameda County, California, 94579, United States",
+      "Dayton Elementary School, 1500, Dayton Avenue, San Leandro, Alameda County, California, 94579, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1743,
+      "Tuesday",
+      8,
+      24573,
+      "Morrill Middle School, 1970, Morrill Avenue, San Jose, Santa Clara County, California, 95132, United States",
+      "Morrill Middle School, 1970, Morrill Avenue, San Jose, Santa Clara County, California, 95132, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1743,
+      "Tuesday",
+      11,
+      8388,
+      "Piedmont Hills High School, 1377, Piedmont Road, San Jose, Santa Clara County, California, 95132, United States",
+      "Piedmont Hills High School, 1377, Piedmont Road, San Jose, Santa Clara County, California, 95132, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1745,
+      "Wednesday",
+      11,
+      4686,
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "16:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1747,
+      "Wednesday",
+      1,
+      4543,
+      "Sunnybrae Elementary School, 1031, South Delaware Street, San Mateo, San Mateo County, California, 94402, United States",
+      "Sunnybrae Elementary School, 1031, South Delaware Street, San Mateo, San Mateo County, California, 94402, United States",
+      "13:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1747,
+      "Wednesday",
+      10,
+      26471,
+      "Washington Elementary School, Arundel Road, Burlingame, San Mateo County, California, 94101, United States",
+      "Washington Elementary School, Arundel Road, Burlingame, San Mateo County, California, 94101, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1748,
+      "Thursday",
+      3,
+      24208,
+      "Cabrillo School, Ortega Court, Linda Mar, Pacifica, San Mateo County, California, 94044, United States",
+      "Cabrillo School, Ortega Court, Linda Mar, Pacifica, San Mateo County, California, 94044, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1753,
+      "Friday",
+      5,
+      5084,
+      "Ponderosa Elementary School, Lassen Street, Baden, South San Francisco, San Mateo County, California, 94080, United States",
+      "Ponderosa Elementary School, Lassen Street, Baden, South San Francisco, San Mateo County, California, 94080, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1754,
+      "Friday",
+      10,
+      15080,
+      "Commodore Sloat Elementary School, 50, Darien Way, Balboa Terrace, San Francisco, California, 94127, United States",
+      "Commodore Sloat Elementary School, 50, Darien Way, Balboa Terrace, San Francisco, California, 94127, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1754,
+      "Friday",
+      14,
+      7713,
+      "Aptos Middle School, 105, Aptos Avenue, Balboa Terrace, San Francisco, California, 94127, United States",
+      "Aptos Middle School, 105, Aptos Avenue, Balboa Terrace, San Francisco, California, 94127, United States",
+      "16:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1756,
+      "Friday",
+      4,
+      19708,
+      "Monticello Elementary School, Heritage Place, Fairhaven, Tracy, San Joaquin County, California, 95377, United States",
+      "Monticello Elementary School, Heritage Place, Fairhaven, Tracy, San Joaquin County, California, 95377, United States",
+      "14:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1756,
+      "Friday",
+      9,
+      5108,
+      "Merrill F. West High School, 1775, West Lowell Avenue, Newport Place, Tracy, San Joaquin County, California, 95376, United States",
+      "Merrill F. West High School, 1775, West Lowell Avenue, Newport Place, Tracy, San Joaquin County, California, 95376, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1762,
+      "Sunday",
+      17,
+      19771,
+      "Bidwell Elementary School, Fairway Street, Carpenter, Hayward, Alameda County, California, 94544, United States",
+      "Bidwell Elementary School, Fairway Street, Carpenter, Hayward, Alameda County, California, 94544, United States",
+      "16:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1767,
+      "Tuesday",
+      19,
+      5805,
+      "Arroyo High School, Lorenzo Avenue, Alameda County, California, 94579, United States",
+      "Arroyo High School, Lorenzo Avenue, Alameda County, California, 94579, United States",
+      "16:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1770,
+      "Wednesday",
+      1,
+      6216,
+      "Peninsula High School, 860, Hinckley Road, Burlingame Village, Burlingame, San Mateo County, California, 94010, United States",
+      "Peninsula High School, 860, Hinckley Road, Burlingame Village, Burlingame, San Mateo County, California, 94010, United States",
+      "12:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1775,
+      "Thursday",
+      9,
+      6230,
+      "Frederiksen Elementary School, 7243, Tamarack Drive, Village Parkway, Dublin, Alameda County, California, 94568, United States",
+      "Frederiksen Elementary School, 7243, Tamarack Drive, Village Parkway, Dublin, Alameda County, California, 94568, United States",
+      "14:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1777,
+      "Thursday",
+      21,
+      14609,
+      "Capuchino High School, Santa Teresa Way, San Bruno, San Mateo County, California, 94030, United States",
+      "Capuchino High School, Santa Teresa Way, San Bruno, San Mateo County, California, 94030, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1780,
+      "Friday",
+      7,
+      9764,
+      "Searles Elementary School, 33629, 15th Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "Searles Elementary School, 33629, 15th Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "14:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1780,
+      "Friday",
+      10,
+      3167,
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1782,
+      "Saturday",
+      10,
+      37942,
+      "Hacienda School, Plumeria Way, Pabrico, Fremont, Alameda County, California, 94536, United States",
+      "Hacienda School, Plumeria Way, Pabrico, Fremont, Alameda County, California, 94536, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1791,
+      "Monday",
+      3,
+      5562,
+      "Leo R Croce Elementary School, 5650, Scenic Avenue, Parklane Estates, Livermore, Alameda County, California, 94550, United States",
+      "Leo R Croce Elementary School, 5650, Scenic Avenue, Parklane Estates, Livermore, Alameda County, California, 94550, United States",
+      "13:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1791,
+      "Monday",
+      7,
+      5590,
+      "Junction Avenue K-8 School, 298, Junction Avenue, The Meadows, Livermore, Alameda County, California, 94551, United States",
+      "Junction Avenue K-8 School, 298, Junction Avenue, The Meadows, Livermore, Alameda County, California, 94551, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1792,
+      "Tuesday",
+      26,
+      7257,
+      "Milpitas High School, 1285, Escuela Parkway, Milpitas, Santa Clara County, California, 95035, United States",
+      "Milpitas High School, 1285, Escuela Parkway, Milpitas, Santa Clara County, California, 95035, United States",
+      "18:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1794,
+      "Wednesday",
+      11,
+      38351,
+      "John F Kennedy High School, Blacow Road, Irvington District, Fremont, Alameda County, California, 94538, United States",
+      "John F Kennedy High School, Blacow Road, Irvington District, Fremont, Alameda County, California, 94538, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1798,
+      "Friday",
+      13,
+      24476,
+      "Anthony W Ochoa Middle School, Occidental Road, Hayward, Alameda County, California, 94545, United States",
+      "Anthony W Ochoa Middle School, Occidental Road, Hayward, Alameda County, California, 94545, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1798,
+      "Friday",
+      27,
+      39636,
+      "Hesperian Elementary School, Tulsa Street, Ashland, Alameda County, California, 94580, United States",
+      "Hesperian Elementary School, Tulsa Street, Ashland, Alameda County, California, 94580, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1809,
+      "Friday",
+      8,
+      18625,
+      "Nesbit Elementary School, Granada Street, Belmont, San Mateo County, California, 94002, United States",
+      "Nesbit Elementary School, Granada Street, Belmont, San Mateo County, California, 94002, United States",
+      "18:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1811,
+      "Monday",
+      9,
+      38351,
+      "John F Kennedy High School, Blacow Road, Irvington District, Fremont, Alameda County, California, 94538, United States",
+      "John F Kennedy High School, Blacow Road, Irvington District, Fremont, Alameda County, California, 94538, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1813,
+      "Friday",
+      11,
+      27649,
+      "Monte Gardens Elementary School, Boxwood Drive, Concord, Contra Costa County, California, 94519, United States",
+      "Monte Gardens Elementary School, Boxwood Drive, Concord, Contra Costa County, California, 94519, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1813,
+      "Friday",
+      12,
+      14337,
+      "Monte Gardens Elementary School, Carlotta Drive, Concord, Contra Costa County, California, 94519, United States",
+      "Monte Gardens Elementary School, Carlotta Drive, Concord, Contra Costa County, California, 94519, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1817,
+      "Friday",
+      8,
+      6469,
+      "California High School, Christopher Way, San Ramon, Contra Costa County, California, 94583, United States",
+      "California High School, Christopher Way, San Ramon, Contra Costa County, California, 94583, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1817,
+      "Friday",
+      10,
+      6486,
+      "California High School, Christopher Way, San Ramon, Contra Costa County, California, 94583, United States",
+      "California High School, Christopher Way, San Ramon, Contra Costa County, California, 94583, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1820,
+      "Thursday",
+      1,
+      5541,
+      "Abraham Lincoln High School, 2162, 24th Avenue, Sunset District, San Francisco, California, 94116, United States",
+      "Abraham Lincoln High School, 2162, 24th Avenue, Sunset District, San Francisco, California, 94116, United States",
+      "12:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1823,
+      "Monday",
+      9,
+      5600,
+      "Encinal High School, Central Avenue, Woodstock, Alameda, Alameda County, California, 94607, United States",
+      "Encinal High School, Central Avenue, Woodstock, Alameda, Alameda County, California, 94607, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1824,
+      "Tuesday",
+      7,
+      32421,
+      "Sunset Ridge Elementary School, 340, Inverness Drive, Pacifica, San Mateo County, California, 94044, United States",
+      "Sunset Ridge Elementary School, 340, Inverness Drive, Pacifica, San Mateo County, California, 94044, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1834,
+      "Monday",
+      7,
+      35154,
+      "Oster Elementary School, 1855, Lencar Way, San Jose, Santa Clara County, California, 95124, United States",
+      "Oster Elementary School, 1855, Lencar Way, San Jose, Santa Clara County, California, 95124, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1837,
+      "Thursday",
+      9,
+      4825,
+      "Crittenden Middle School, 1701, Rock Street, Mountain View, Santa Clara County, California, 94043, United States",
+      "Crittenden Middle School, 1701, Rock Street, Mountain View, Santa Clara County, California, 94043, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1841,
+      "Friday",
+      1,
+      5745,
+      "Los Gatos High School, 20, High School Court, Creekside Village, Los Gatos, Santa Clara County, California, 95030, United States",
+      "Los Gatos High School, 20, High School Court, Creekside Village, Los Gatos, Santa Clara County, California, 95030, United States",
+      "12:30",
+      "2026-09-18 05:03:11.497739-07:00"
+    ],
+    [
+      1845,
+      "Saturday",
+      1,
+      30150,
+      "William Mendenhall Middle School, 710, El Padro Drive, Livermore, Alameda County, California, 94550, United States",
+      "William Mendenhall Middle School, 710, El Padro Drive, Livermore, Alameda County, California, 94550, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1845,
+      "Saturday",
+      2,
+      30166,
+      "William Mendenhall Middle School, 710, El Padro Drive, Livermore, Alameda County, California, 94550, United States",
+      "William Mendenhall Middle School, 710, El Padro Drive, Livermore, Alameda County, California, 94550, United States",
+      "19:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1855,
+      "Tuesday",
+      1,
+      5745,
+      "Los Gatos High School, 20, High School Court, Creekside Village, Los Gatos, Santa Clara County, California, 95030, United States",
+      "Los Gatos High School, 20, High School Court, Creekside Village, Los Gatos, Santa Clara County, California, 95030, United States",
+      "12:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1861,
+      "Thursday",
+      6,
+      11226,
+      "Sun Terrace Elementary School, Cardinal Court, Sun Terrace, Concord, Contra Costa County, California, 94520, United States",
+      "Sun Terrace Elementary School, Cardinal Court, Sun Terrace, Concord, Contra Costa County, California, 94520, United States",
+      "14:30",
+      "2026-07-18 05:02:32.027297-07:00"
+    ],
+    [
+      1865,
+      "Friday",
+      2,
+      20370,
+      "Quimby Oak Middle school, 3190, Quimby Road, San Jose, Santa Clara County, California, 95148, United States",
+      "Quimby Oak Middle school, 3190, Quimby Road, San Jose, Santa Clara County, California, 95148, United States",
+      "16:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1874,
+      "Saturday",
+      3,
+      31073,
+      "Saint Clare School, 725, Washington Street, Santa Clara, Santa Clara County, California, 95050, United States",
+      "Saint Clare School, 725, Washington Street, Santa Clara, Santa Clara County, California, 95050, United States",
+      "11:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1874,
+      "Saturday",
+      4,
+      31077,
+      "Washington Open Elementary School, Washington Street, Santa Clara, Santa Clara County, California, 95053, United States",
+      "Washington Open Elementary School, Washington Street, Santa Clara, Santa Clara County, California, 95053, United States",
+      "13:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1875,
+      "Saturday",
+      13,
+      30166,
+      "William Mendenhall Middle School, 710, El Padro Drive, Livermore, Alameda County, California, 94550, United States",
+      "William Mendenhall Middle School, 710, El Padro Drive, Livermore, Alameda County, California, 94550, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1881,
+      "Thursday",
+      1,
+      6216,
+      "Peninsula High School, 860, Hinckley Road, Burlingame Village, Burlingame, San Mateo County, California, 94010, United States",
+      "Peninsula High School, 860, Hinckley Road, Burlingame Village, Burlingame, San Mateo County, California, 94010, United States",
+      "12:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1884,
+      "Saturday",
+      1,
+      31330,
+      "Bagby Elementary School, 1840, Harris Avenue, Dry Creek, San Jose, Santa Clara County, California, 95124, United States",
+      "Bagby Elementary School, 1840, Harris Avenue, Dry Creek, San Jose, Santa Clara County, California, 95124, United States",
+      "13:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1884,
+      "Saturday",
+      2,
+      31332,
+      "Bagby Elementary School, 1840, Harris Avenue, San Jose, Santa Clara County, California, 95124, United States",
+      "Bagby Elementary School, 1840, Harris Avenue, San Jose, Santa Clara County, California, 95124, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1899,
+      "Wednesday",
+      1,
+      15823,
+      "Susan B. Anthony Elementary School, 575, Abbot Avenue, Daly City, San Mateo County, California, 94014, United States",
+      "Susan B. Anthony Elementary School, 575, Abbot Avenue, Daly City, San Mateo County, California, 94014, United States",
+      "13:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1899,
+      "Wednesday",
+      2,
+      20647,
+      "Susan B. Anthony Elementary School, 575, Abbot Avenue, Daly City, San Mateo County, California, 94014, United States",
+      "Susan B. Anthony Elementary School, 575, Abbot Avenue, Daly City, San Mateo County, California, 94014, United States",
+      "13:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1900,
+      "Wednesday",
+      10,
+      19309,
+      "Carlton Avenue School, 2421, Carlton Avenue, San Jose, Santa Clara County, California, 95124, United States",
+      "Carlton Avenue School, 2421, Carlton Avenue, San Jose, Santa Clara County, California, 95124, United States",
+      "16:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1904,
+      "Friday",
+      2,
+      18280,
+      "Silver Oak Elementary School, 5000, Farnsworth Drive, San Jose, Santa Clara County, California, 95138, United States",
+      "Silver Oak Elementary School, 5000, Farnsworth Drive, San Jose, Santa Clara County, California, 95138, United States",
+      "17:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1908,
+      "Monday",
+      19,
+      26586,
+      "Clayton Valley High School, Saint Catherine Court, Concord, Contra Costa County, California, 94521, United States",
+      "Clayton Valley High School, Saint Catherine Court, Concord, Contra Costa County, California, 94521, United States",
+      "17:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1918,
+      "Saturday",
+      5,
+      42049,
+      "Challenger Middlefield Elementary School, 3880, Middlefield Road, Palo Alto, Santa Clara County, California, 94303, United States",
+      "Challenger Middlefield Elementary School, 3880, Middlefield Road, Palo Alto, Santa Clara County, California, 94303, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1942,
+      "Saturday",
+      14,
+      33402,
+      "New Traditions Elementary School, 2049, Grove Street, Panhandle, San Francisco, California, 94117, United States",
+      "New Traditions Elementary School, 2049, Grove Street, Panhandle, San Francisco, California, 94117, United States",
+      "16:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1946,
+      "Wednesday",
+      3,
+      8922,
+      "Arbor Bay School, 1017, Cedar Street, San Carlos, San Mateo County, California, 94070, United States",
+      "Arbor Bay School, 1017, Cedar Street, San Carlos, San Mateo County, California, 94070, United States",
+      "18:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1950,
+      "Thursday",
+      11,
+      8738,
+      "Phillip and Sala Burton Academic High School, Mansell Street, Portola, Bayview District, San Francisco, California, 94134, United States",
+      "Phillip and Sala Burton Academic High School, Mansell Street, Portola, Bayview District, San Francisco, California, 94134, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1955,
+      "Wednesday",
+      4,
+      7389,
+      "Presidio Middle School, 450, 30th Avenue, Outer Richmond, San Francisco, California, 94121, United States",
+      "Presidio Middle School, 450, 30th Avenue, Outer Richmond, San Francisco, California, 94121, United States",
+      "14:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1965,
+      "Tuesday",
+      12,
+      34451,
+      "Cambridge Elementary School, Lacey Lane, Four Corners, Concord, Contra Costa County, California, 94520, United States",
+      "Cambridge Elementary School, Lacey Lane, Four Corners, Concord, Contra Costa County, California, 94520, United States",
+      "17:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1976,
+      "Thursday",
+      2,
+      30145,
+      "McKinley Intermediate School, James Avenue, Redwood City, San Mateo County, California, 94063, United States",
+      "McKinley Intermediate School, James Avenue, Redwood City, San Mateo County, California, 94063, United States",
+      "17:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1978,
+      "Friday",
+      25,
+      3337,
+      "Monte Vista High School, 3131, Stone Valley Road, Danville, Contra Costa County, California, 94507, United States",
+      "Monte Vista High School, 3131, Stone Valley Road, Danville, Contra Costa County, California, 94507, United States",
+      "19:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1984,
+      "Wednesday",
+      4,
+      3167,
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "14:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1988,
+      "Thursday",
+      1,
+      6216,
+      "Peninsula High School, 860, Hinckley Road, Burlingame Village, Burlingame, San Mateo County, California, 94010, United States",
+      "Peninsula High School, 860, Hinckley Road, Burlingame Village, Burlingame, San Mateo County, California, 94010, United States",
+      "13:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      1992,
+      "Saturday",
+      4,
+      19718,
+      "Menlo-Atherton High School, De Bell Drive, Lindenwood, Atherton, San Mateo County, California, 94025, United States",
+      "Menlo-Atherton High School, De Bell Drive, Lindenwood, Atherton, San Mateo County, California, 94025, United States",
+      "15:00",
+      "2026-07-11 05:01:03.919928-07:00"
+    ],
+    [
+      2005,
+      "Wednesday",
+      14,
+      12576,
+      "William Burnett Elementary School, 400, Fanyon Street, Milpitas, Santa Clara County, California, 95035, United States",
+      "William Burnett Elementary School, 400, Fanyon Street, Milpitas, Santa Clara County, California, 95035, United States",
+      "17:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2005,
+      "Wednesday",
+      16,
+      14971,
+      "Pearl Zanker Elementary School, 1585, Fallen Leaf Drive, Milpitas, Santa Clara County, California, 95035, United States",
+      "Pearl Zanker Elementary School, 1585, Fallen Leaf Drive, Milpitas, Santa Clara County, California, 95035, United States",
+      "17:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2033,
+      "Saturday",
+      14,
+      31650,
+      "Arundel Elementary School, Clifton Avenue, Devonshire, San Carlos, San Mateo County, California, 94070, United States",
+      "Arundel Elementary School, Clifton Avenue, Devonshire, San Carlos, San Mateo County, California, 94070, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2037,
+      "Friday",
+      4,
+      8545,
+      "Central Middle School, Woodland Avenue, San Carlos, San Mateo County, California, 94070, United States",
+      "Central Middle School, Woodland Avenue, San Carlos, San Mateo County, California, 94070, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2038,
+      "Friday",
+      1,
+      24252,
+      "Christ the King School, Brandon Road, Poet's Corner, Pleasant Hill, Contra Costa County, California, 94597, United States",
+      "Christ the King School, Brandon Road, Poet's Corner, Pleasant Hill, Contra Costa County, California, 94597, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2041,
+      "Saturday",
+      1,
+      20365,
+      "Monte Vista High School South Lot, Eliminator Connector, Danville, Contra Costa County, California, 94507, United States",
+      "Monte Vista High School South Lot, Eliminator Connector, Danville, Contra Costa County, California, 94507, United States",
+      "12:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2041,
+      "Saturday",
+      3,
+      24252,
+      "Christ the King School, Brandon Road, Poet's Corner, Pleasant Hill, Contra Costa County, California, 94597, United States",
+      "Christ the King School, Brandon Road, Poet's Corner, Pleasant Hill, Contra Costa County, California, 94597, United States",
+      "17:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2051,
+      "Wednesday",
+      2,
+      12724,
+      "Alameda High School, 2200, Central Avenue, Gold Coast, Alameda, Alameda County, California, 94501, United States",
+      "Alameda High School, 2200, Central Avenue, Gold Coast, Alameda, Alameda County, California, 94501, United States",
+      "12:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2077,
+      "Wednesday",
+      2,
+      3167,
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "13:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2081,
+      "Thursday",
+      1,
+      37147,
+      "School of Law, 559, Nathan Abbott Way, Munger Graduate Residences, Stanford, Santa Clara County, California, 94305, United States",
+      "School of Law, 559, Nathan Abbott Way, Munger Graduate Residences, Stanford, Santa Clara County, California, 94305, United States",
+      "14:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2106,
+      "Saturday",
+      1,
+      37568,
+      "Foothill High School, Pecan Court, Pleasanton, Alameda County, California, 94588, United States",
+      "Foothill High School, Pecan Court, Pleasanton, Alameda County, California, 94588, United States",
+      "14:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2124,
+      "Monday",
+      11,
+      7035,
+      "Dougherty Valley High School, 10550, Albion Road, Windemere, Dougherty Valley, San Ramon, Contra Costa County, California, 94582, United States",
+      "Dougherty Valley High School, 10550, Albion Road, Windemere, Dougherty Valley, San Ramon, Contra Costa County, California, 94582, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2169,
+      "Sunday",
+      1,
+      7035,
+      "Dougherty Valley High School, 10550, Albion Road, Windemere, Dougherty Valley, San Ramon, Contra Costa County, California, 94582, United States",
+      "Dougherty Valley High School, 10550, Albion Road, Windemere, Dougherty Valley, San Ramon, Contra Costa County, California, 94582, United States",
+      "11:00",
+      "2026-07-27 05:00:54.543585-07:00"
+    ],
+    [
+      2185,
+      "Monday",
+      9,
+      20181,
+      "Castillero Middle School, 6384, Leyland Park Drive, Pierce Ranch, Almaden Valley, San Jose, Santa Clara County, California, 95120, United States",
+      "Castillero Middle School, 6384, Leyland Park Drive, Pierce Ranch, Almaden Valley, San Jose, Santa Clara County, California, 95120, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2185,
+      "Monday",
+      11,
+      5703,
+      "Castillero Middle School, 6384, Leyland Park Drive, Pierce Ranch, Almaden Valley, San Jose, Santa Clara County, California, 95120, United States",
+      "Castillero Middle School, 6384, Leyland Park Drive, Pierce Ranch, Almaden Valley, San Jose, Santa Clara County, California, 95120, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2186,
+      "Monday",
+      2,
+      20178,
+      "Frank C. Havens Elementary School, 323, Highland Avenue, Piedmont, Alameda County, California, 94611, United States",
+      "Frank C. Havens Elementary School, 323, Highland Avenue, Piedmont, Alameda County, California, 94611, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2189,
+      "Tuesday",
+      1,
+      19137,
+      "Palma Ceia Elementary School, Decatur Way, Hayward, Alameda County, California, 94545, United States",
+      "Palma Ceia Elementary School, Decatur Way, Hayward, Alameda County, California, 94545, United States",
+      "18:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2191,
+      "Thursday",
+      7,
+      19245,
+      "Escondido Elementary School;Bing Nursery School, Escondido Road, Palo Alto, Santa Clara County, California, 94304, United States",
+      "Escondido Elementary School;Bing Nursery School, Escondido Road, Palo Alto, Santa Clara County, California, 94304, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2193,
+      "Friday",
+      6,
+      19297,
+      "Columbia Middle School, 739, Morse Avenue, Sunnyvale, Santa Clara County, California, 94085, United States",
+      "Columbia Middle School, 739, Morse Avenue, Sunnyvale, Santa Clara County, California, 94085, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2212,
+      "Saturday",
+      1,
+      20069,
+      "Taylor Middle School, Taylor Boulevard, Millbrae, San Mateo County, California, 94030, United States",
+      "Taylor Middle School, Taylor Boulevard, Millbrae, San Mateo County, California, 94030, United States",
+      "11:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2212,
+      "Saturday",
+      7,
+      20079,
+      "Capuchino High School, Capuchino Drive, Millbrae Meadows, Millbrae, San Mateo County, California, 94030, United States",
+      "Capuchino High School, Capuchino Drive, Millbrae Meadows, Millbrae, San Mateo County, California, 94030, United States",
+      "14:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2219,
+      "Friday",
+      2,
+      20365,
+      "Monte Vista High School South Lot, Eliminator Connector, Danville, Contra Costa County, California, 94507, United States",
+      "Monte Vista High School South Lot, Eliminator Connector, Danville, Contra Costa County, California, 94507, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2225,
+      "Sunday",
+      2,
+      11005,
+      "Junipero Serra High School, Stratford Way, San Mateo, San Mateo County, California, 94402, United States",
+      "Junipero Serra High School, Stratford Way, San Mateo, San Mateo County, California, 94402, United States",
+      "13:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2225,
+      "Sunday",
+      3,
+      20447,
+      "Junipero Serra High School, Stratford Way, San Mateo, San Mateo County, California, 94402, United States",
+      "Junipero Serra High School, Stratford Way, San Mateo, San Mateo County, California, 94402, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2226,
+      "Tuesday",
+      6,
+      11005,
+      "Junipero Serra High School, Stratford Way, San Mateo, San Mateo County, California, 94402, United States",
+      "Junipero Serra High School, Stratford Way, San Mateo, San Mateo County, California, 94402, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2228,
+      "Tuesday",
+      1,
+      1,
+      "Clayton Valley High School, Saint Catherine Court, Concord, Contra Costa County, California, 94521, United States",
+      "Clayton Valley High School, Saint Catherine Court, Concord, Contra Costa County, California, 94521, United States",
+      "12:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2233,
+      "Thursday",
+      1,
+      28575,
+      "Anthony Spangler Elementary School, 140, North Abbott Avenue, Milpitas, Santa Clara County, California, 95035, United States",
+      "Anthony Spangler Elementary School, 140, North Abbott Avenue, Milpitas, Santa Clara County, California, 95035, United States",
+      "16:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2233,
+      "Thursday",
+      2,
+      20643,
+      "Anthony Spangler Elementary School, 140, North Abbott Avenue, Milpitas, Santa Clara County, California, 95035, United States",
+      "Anthony Spangler Elementary School, 140, North Abbott Avenue, Milpitas, Santa Clara County, California, 95035, United States",
+      "18:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2235,
+      "Friday",
+      10,
+      8545,
+      "Central Middle School, Woodland Avenue, San Carlos, San Mateo County, California, 94070, United States",
+      "Central Middle School, Woodland Avenue, San Carlos, San Mateo County, California, 94070, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2249,
+      "Friday",
+      12,
+      4686,
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "18:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2249,
+      "Friday",
+      13,
+      21051,
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "19:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2267,
+      "Saturday",
+      1,
+      6862,
+      "Newark Memorial High School, 39375, Cedar Boulevard, Newark, Alameda County, California, 94560, United States",
+      "Newark Memorial High School, 39375, Cedar Boulevard, Newark, Alameda County, California, 94560, United States",
+      "12:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2267,
+      "Saturday",
+      7,
+      21461,
+      "Ramblewood Elementary School, 1351, Lightland Road, San Jose, Santa Clara County, California, 95121, United States",
+      "Ramblewood Elementary School, 1351, Lightland Road, San Jose, Santa Clara County, California, 95121, United States",
+      "18:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2273,
+      "Wednesday",
+      7,
+      20643,
+      "Anthony Spangler Elementary School, 140, North Abbott Avenue, Milpitas, Santa Clara County, California, 95035, United States",
+      "Anthony Spangler Elementary School, 140, North Abbott Avenue, Milpitas, Santa Clara County, California, 95035, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2287,
+      "Monday",
+      8,
+      24332,
+      "Walnut Acres Elementary School, Cerezo Drive, Walnut Creek, Contra Costa County, California, 94598, United States",
+      "Walnut Acres Elementary School, Cerezo Drive, Walnut Creek, Contra Costa County, California, 94598, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2334,
+      "Wednesday",
+      1,
+      4686,
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "17:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2335,
+      "Wednesday",
+      2,
+      23740,
+      "Jane Lathrop Stanford Middle School, Bryant Street, Fairmeadow, Palo Alto, Santa Clara County, California, 94306, United States",
+      "Jane Lathrop Stanford Middle School, Bryant Street, Fairmeadow, Palo Alto, Santa Clara County, California, 94306, United States",
+      "13:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2340,
+      "Friday",
+      6,
+      13457,
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "18:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2357,
+      "Thursday",
+      9,
+      2875,
+      "Redwood Christian Middle School & High School, Via la Paloma, Alameda County, California, 94579, United States",
+      "Redwood Christian Middle School & High School, Via la Paloma, Alameda County, California, 94579, United States",
+      "18:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2366,
+      "Friday",
+      20,
+      6527,
+      "Baywood Elementary School, 600, Alameda de las Pulgas, San Mateo, San Mateo County, California, 94401, United States",
+      "Baywood Elementary School, 600, Alameda de las Pulgas, San Mateo, San Mateo County, California, 94401, United States",
+      "18:30",
+      "2026-08-16 05:03:08.012632-07:00"
+    ],
+    [
+      2375,
+      "Wednesday",
+      1,
+      6006,
+      "Montague Elementary School, 750, Laurie Avenue, Santa Clara, Santa Clara County, California, 95054, United States",
+      "Montague Elementary School, 750, Laurie Avenue, Santa Clara, Santa Clara County, California, 95054, United States",
+      "13:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2378,
+      "Friday",
+      2,
+      3337,
+      "Monte Vista High School, 3131, Stone Valley Road, Danville, Contra Costa County, California, 94507, United States",
+      "Monte Vista High School, 3131, Stone Valley Road, Danville, Contra Costa County, California, 94507, United States",
+      "20:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2383,
+      "Saturday",
+      1,
+      6623,
+      "Ledesma Elementary School, 1001, Schoolhouse Road, San Jose, Santa Clara County, California, 95138, United States",
+      "Ledesma Elementary School, 1001, Schoolhouse Road, San Jose, Santa Clara County, California, 95138, United States",
+      "12:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2387,
+      "Wednesday",
+      7,
+      9492,
+      "Curtner Elementary School, 275, Redwood Avenue, Milpitas, Santa Clara County, California, 95035, United States",
+      "Curtner Elementary School, 275, Redwood Avenue, Milpitas, Santa Clara County, California, 95035, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2408,
+      "Saturday",
+      5,
+      10010,
+      "Las Lomas High School, Quail Court, Walnut Creek, Contra Costa County, California, 94596, United States",
+      "Las Lomas High School, Quail Court, Walnut Creek, Contra Costa County, California, 94596, United States",
+      "20:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2417,
+      "Saturday",
+      1,
+      10734,
+      "Baldwin Before & After School Enrichment, 280, Martinvale Lane, San Jose, Santa Clara County, California, 95119, United States",
+      "Baldwin Before & After School Enrichment, 280, Martinvale Lane, San Jose, Santa Clara County, California, 95119, United States",
+      "16:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2421,
+      "Wednesday",
+      5,
+      11129,
+      "Arroyo Seco Elementary School, Kathy Way, Livermore, Alameda County, California, 94605, United States",
+      "Arroyo Seco Elementary School, Kathy Way, Livermore, Alameda County, California, 94605, United States",
+      "16:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2428,
+      "Saturday",
+      1,
+      11355,
+      "North Hillsborough Elementary School, New Place Road, Hillsborough, San Mateo County, California, 94010, United States",
+      "North Hillsborough Elementary School, New Place Road, Hillsborough, San Mateo County, California, 94010, United States",
+      "12:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2431,
+      "Saturday",
+      1,
+      11356,
+      "Montevideo Elementary School, Foxboro Circle, San Ramon, Contra Costa County, California, 94583, United States",
+      "Montevideo Elementary School, Foxboro Circle, San Ramon, Contra Costa County, California, 94583, United States",
+      "12:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2439,
+      "Saturday",
+      1,
+      24278,
+      "Saint John's School, Burnside Avenue, Glen Park, San Francisco, California, 94112, United States",
+      "Saint John's School, Burnside Avenue, Glen Park, San Francisco, California, 94112, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2442,
+      "Saturday",
+      1,
+      24275,
+      "Loyola Elementary School, Berry Avenue, Los Altos, Santa Clara County, California, 94024, United States",
+      "Loyola Elementary School, Berry Avenue, Los Altos, Santa Clara County, California, 94024, United States",
+      "11:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2464,
+      "Thursday",
+      1,
+      25071,
+      "Stratford School Sunnyvale De Anza Park, 1196, Lime Drive, Sunnyvale, Santa Clara County, California, 94087, United States",
+      "Stratford School Sunnyvale De Anza Park, 1196, Lime Drive, Sunnyvale, Santa Clara County, California, 94087, United States",
+      "16:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2473,
+      "Monday",
+      2,
+      20704,
+      "Aragon High School, 900, Alameda de las Pulgas, San Mateo, San Mateo County, California, 94402, United States",
+      "Aragon High School, 900, Alameda de las Pulgas, San Mateo, San Mateo County, California, 94402, United States",
+      "18:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2475,
+      "Friday",
+      9,
+      37897,
+      "Sunset Elementary School, Frankfurt Way, Livermore, Alameda County, California, 94550, United States",
+      "Sunset Elementary School, Frankfurt Way, Livermore, Alameda County, California, 94550, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2475,
+      "Friday",
+      10,
+      25536,
+      "Sunset Elementary School, Frankfurt Way, Livermore, Alameda County, California, 94550, United States",
+      "Sunset Elementary School, Frankfurt Way, Livermore, Alameda County, California, 94550, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2475,
+      "Friday",
+      16,
+      43229,
+      "Emma C Smith Elementary School, Ontario Drive, Livermore, Alameda County, California, 94551, United States",
+      "Emma C Smith Elementary School, Ontario Drive, Livermore, Alameda County, California, 94551, United States",
+      "16:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2477,
+      "Saturday",
+      1,
+      3167,
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2477,
+      "Saturday",
+      2,
+      13457,
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "16:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2489,
+      "Monday",
+      1,
+      20181,
+      "Castillero Middle School, 6384, Leyland Park Drive, Pierce Ranch, Almaden Valley, San Jose, Santa Clara County, California, 95120, United States",
+      "Castillero Middle School, 6384, Leyland Park Drive, Pierce Ranch, Almaden Valley, San Jose, Santa Clara County, California, 95120, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2508,
+      "Friday",
+      1,
+      5084,
+      "Ponderosa Elementary School, Lassen Street, Baden, South San Francisco, San Mateo County, California, 94080, United States",
+      "Ponderosa Elementary School, Lassen Street, Baden, South San Francisco, San Mateo County, California, 94080, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2512,
+      "Saturday",
+      15,
+      12624,
+      "40137, School Court, Irvington District, Fremont, Alameda County, California, 94538, United States",
+      "40137, School Court, Irvington District, Fremont, Alameda County, California, 94538, United States",
+      "17:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2537,
+      "Sunday",
+      1,
+      3167,
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "14:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2551,
+      "Sunday",
+      8,
+      26666,
+      "Dianne Feinstein Elementary School, 25th Avenue, Parkside, Sunset District, San Francisco, California, 94116, United States",
+      "Dianne Feinstein Elementary School, 25th Avenue, Parkside, Sunset District, San Francisco, California, 94116, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2562,
+      "Tuesday",
+      1,
+      11005,
+      "Junipero Serra High School, Stratford Way, San Mateo, San Mateo County, California, 94402, United States",
+      "Junipero Serra High School, Stratford Way, San Mateo, San Mateo County, California, 94402, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2576,
+      "Sunday",
+      4,
+      27723,
+      "Bethany Elementary School, 570, Escuela Drive, Bethany, Tracy, San Joaquin County, California, 95391, United States",
+      "Bethany Elementary School, 570, Escuela Drive, Bethany, Tracy, San Joaquin County, California, 95391, United States",
+      "13:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2579,
+      "Tuesday",
+      9,
+      37011,
+      "Ben Painter Elementary School, 500, Rough and Ready Road, Berryessa, San Jose, Santa Clara County, California, 95133, United States",
+      "Ben Painter Elementary School, 500, Rough and Ready Road, Berryessa, San Jose, Santa Clara County, California, 95133, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2590,
+      "Monday",
+      5,
+      5703,
+      "Castillero Middle School, 6384, Leyland Park Drive, Pierce Ranch, Almaden Valley, San Jose, Santa Clara County, California, 95120, United States",
+      "Castillero Middle School, 6384, Leyland Park Drive, Pierce Ranch, Almaden Valley, San Jose, Santa Clara County, California, 95120, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2600,
+      "Sunday",
+      7,
+      39023,
+      "Rancho Las Positas Elementary School, East Jack London Boulevard, Livermore, Alameda County, California, 94551, United States",
+      "Rancho Las Positas Elementary School, East Jack London Boulevard, Livermore, Alameda County, California, 94551, United States",
+      "18:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2609,
+      "Friday",
+      2,
+      20370,
+      "Quimby Oak Middle school, 3190, Quimby Road, San Jose, Santa Clara County, California, 95148, United States",
+      "Quimby Oak Middle school, 3190, Quimby Road, San Jose, Santa Clara County, California, 95148, United States",
+      "16:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2609,
+      "Friday",
+      4,
+      18360,
+      "Quimby Oak Middle school, 3190, Quimby Road, San Jose, Santa Clara County, California, 95148, United States",
+      "Quimby Oak Middle school, 3190, Quimby Road, San Jose, Santa Clara County, California, 95148, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2674,
+      "Friday",
+      17,
+      6862,
+      "Newark Memorial High School, 39375, Cedar Boulevard, Newark, Alameda County, California, 94560, United States",
+      "Newark Memorial High School, 39375, Cedar Boulevard, Newark, Alameda County, California, 94560, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2676,
+      "Saturday",
+      6,
+      5371,
+      "Los Paseos Elementary School, 121, Avenida Grande, San Jose, Santa Clara County, California, 95139, United States",
+      "Los Paseos Elementary School, 121, Avenida Grande, San Jose, Santa Clara County, California, 95139, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2680,
+      "Sunday",
+      8,
+      40258,
+      "Orion Alternative Elementary School, 815, Allerton Street, Redwood City, San Mateo County, California, 94063, United States",
+      "Orion Alternative Elementary School, 815, Allerton Street, Redwood City, San Mateo County, California, 94063, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2700,
+      "Tuesday",
+      2,
+      24362,
+      "Ida Price Middle School, 2650, New Jersey Avenue, San Jose, Santa Clara County, California, 95124, United States",
+      "Ida Price Middle School, 2650, New Jersey Avenue, San Jose, Santa Clara County, California, 95124, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2705,
+      "Friday",
+      3,
+      40443,
+      "Napa High School, 2475, Jefferson Street, Napa, Napa County, California, 94558, United States",
+      "Napa High School, 2475, Jefferson Street, Napa, Napa County, California, 94558, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2708,
+      "Friday",
+      7,
+      24476,
+      "Anthony W Ochoa Middle School, Occidental Road, Hayward, Alameda County, California, 94545, United States",
+      "Anthony W Ochoa Middle School, Occidental Road, Hayward, Alameda County, California, 94545, United States",
+      "15:30",
+      "2026-09-28 05:02:48.052285-07:00"
+    ],
+    [
+      2734,
+      "Friday",
+      1,
+      3167,
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "James Logan High School, 1800, H Street, Decoto, Union City, Alameda County, California, 94587, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2761,
+      "Friday",
+      4,
+      39281,
+      "Palo Alto High School, 50, Embarcadero Road, Palo Alto, Santa Clara County, California, 94301, United States",
+      "Palo Alto High School, 50, Embarcadero Road, Palo Alto, Santa Clara County, California, 94301, United States",
+      "20:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2762,
+      "Friday",
+      2,
+      4781,
+      "Mills High School, 400, Murchison Drive, Millbrae, San Mateo County, California, 94030, United States",
+      "Mills High School, 400, Murchison Drive, Millbrae, San Mateo County, California, 94030, United States",
+      "13:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2762,
+      "Friday",
+      6,
+      8922,
+      "Arbor Bay School, 1017, Cedar Street, San Carlos, San Mateo County, California, 94070, United States",
+      "Arbor Bay School, 1017, Cedar Street, San Carlos, San Mateo County, California, 94070, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2772,
+      "Monday",
+      3,
+      31983,
+      "Central Middle School, Woodland Avenue, San Carlos, San Mateo County, California, 94070, United States",
+      "Central Middle School, Woodland Avenue, San Carlos, San Mateo County, California, 94070, United States",
+      "17:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      2788,
+      "Friday",
+      8,
+      11320,
+      "Encinal Elementary School, Encinal Avenue, Lindenwood, Atherton, San Mateo County, California, 94025, United States",
+      "Encinal Elementary School, Encinal Avenue, Lindenwood, Atherton, San Mateo County, California, 94025, United States",
+      "18:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3010,
+      "Monday",
+      1,
+      41103,
+      "Northgate High School, Hutchinson Road, Walnut Creek, Contra Costa County, California, 94598, United States",
+      "Northgate High School, Hutchinson Road, Walnut Creek, Contra Costa County, California, 94598, United States",
+      "13:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3011,
+      "Monday",
+      4,
+      33127,
+      "Alhambra High School, 150, E Street, Martinez, Contra Costa County, California, 94553, United States",
+      "Alhambra High School, 150, E Street, Martinez, Contra Costa County, California, 94553, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3012,
+      "Monday",
+      1,
+      41095,
+      "Piedmont Hills High School, 1377, Piedmont Road, Berryessa, San Jose, Santa Clara County, California, 95132, United States",
+      "Piedmont Hills High School, 1377, Piedmont Road, Berryessa, San Jose, Santa Clara County, California, 95132, United States",
+      "13:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3019,
+      "Thursday",
+      1,
+      30195,
+      "Alhambra High School, 150, E Street, Martinez, Contra Costa County, California, 94553, United States",
+      "Alhambra High School, 150, E Street, Martinez, Contra Costa County, California, 94553, United States",
+      "13:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3026,
+      "Friday",
+      3,
+      8922,
+      "Arbor Bay School, 1017, Cedar Street, San Carlos, San Mateo County, California, 94070, United States",
+      "Arbor Bay School, 1017, Cedar Street, San Carlos, San Mateo County, California, 94070, United States",
+      "18:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3040,
+      "Wednesday",
+      7,
+      9492,
+      "Curtner Elementary School, 275, Redwood Avenue, Milpitas, Santa Clara County, California, 95035, United States",
+      "Curtner Elementary School, 275, Redwood Avenue, Milpitas, Santa Clara County, California, 95035, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3049,
+      "Friday",
+      8,
+      5541,
+      "Abraham Lincoln High School, 2162, 24th Avenue, Sunset District, San Francisco, California, 94116, United States",
+      "Abraham Lincoln High School, 2162, 24th Avenue, Sunset District, San Francisco, California, 94116, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3072,
+      "Wednesday",
+      2,
+      31659,
+      "Dublin Elementary School, Donald D Doyle Highway, Dublin, Alameda County, California, 94588, United States",
+      "Dublin Elementary School, Donald D Doyle Highway, Dublin, Alameda County, California, 94588, United States",
+      "17:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3095,
+      "Tuesday",
+      3,
+      7713,
+      "Aptos Middle School, 105, Aptos Avenue, Balboa Terrace, San Francisco, California, 94127, United States",
+      "Aptos Middle School, 105, Aptos Avenue, Balboa Terrace, San Francisco, California, 94127, United States",
+      "17:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3117,
+      "Saturday",
+      1,
+      15315,
+      "Leigh High School, 5210, Leigh Avenue, San Jose, Santa Clara County, California, 95124, United States",
+      "Leigh High School, 5210, Leigh Avenue, San Jose, Santa Clara County, California, 95124, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3180,
+      "Monday",
+      3,
+      20968,
+      "Strandwood Elementary School, Gladys Drive, Gregory Gardens, Pleasant Hill, Contra Costa County, California, 94523, United States",
+      "Strandwood Elementary School, Gladys Drive, Gregory Gardens, Pleasant Hill, Contra Costa County, California, 94523, United States",
+      "17:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3189,
+      "Tuesday",
+      7,
+      32421,
+      "Sunset Ridge Elementary School, 340, Inverness Drive, Pacifica, San Mateo County, California, 94044, United States",
+      "Sunset Ridge Elementary School, 340, Inverness Drive, Pacifica, San Mateo County, California, 94044, United States",
+      "15:00",
+      "2026-09-26 05:02:28.470770-07:00"
+    ],
+    [
+      3192,
+      "Wednesday",
+      4,
+      42970,
+      "Simonds Elementary School, 6515, Grapevine Way, Almaden Valley, San Jose, Santa Clara County, California, 95120, United States",
+      "Simonds Elementary School, 6515, Grapevine Way, Almaden Valley, San Jose, Santa Clara County, California, 95120, United States",
+      "17:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3196,
+      "Thursday",
+      3,
+      42990,
+      "Parkmont Elementary School, 2601, Parkside Drive, Shinn, Fremont, Alameda County, California, 94536, United States",
+      "Parkmont Elementary School, 2601, Parkside Drive, Shinn, Fremont, Alameda County, California, 94536, United States",
+      "13:00",
+      "2026-09-20 05:01:44.068931-07:00"
+    ],
+    [
+      3197,
+      "Thursday",
+      1,
+      42995,
+      "Ayers Elementary School, Karas Court, Concord, Contra Costa County, California, 94521, United States",
+      "Ayers Elementary School, Karas Court, Concord, Contra Costa County, California, 94521, United States",
+      "14:00",
+      "2026-09-03 05:04:06.486075-07:00"
+    ],
+    [
+      3206,
+      "Sunday",
+      5,
+      43114,
+      "Emma C Smith Elementary School, Ontario Drive, Livermore, Alameda County, California, 94551, United States",
+      "Emma C Smith Elementary School, Ontario Drive, Livermore, Alameda County, California, 94551, United States",
+      "20:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3218,
+      "Thursday",
+      3,
+      4686,
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3254,
+      "Wednesday",
+      1,
+      4686,
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "16:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3262,
+      "Friday",
+      1,
+      43395,
+      "Cherry Chase Elementary School, Morningside Drive, Sunnyvale, Santa Clara County, California, 94807, United States",
+      "Cherry Chase Elementary School, Morningside Drive, Sunnyvale, Santa Clara County, California, 94807, United States",
+      "19:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3290,
+      "Wednesday",
+      1,
+      4686,
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "17:00",
+      "2026-09-16 05:03:36.796946-07:00"
+    ],
+    [
+      3293,
+      "Thursday",
+      4,
+      43548,
+      "Springer Elementary School, Orangetree Lane, Mountain View, Santa Clara County, California, 94024, United States",
+      "Springer Elementary School, Orangetree Lane, Mountain View, Santa Clara County, California, 94024, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3321,
+      "Tuesday",
+      3,
+      41099,
+      "El Camino High School, 1320, Mission Road, South San Francisco, San Mateo County, California, 94080, United States",
+      "El Camino High School, 1320, Mission Road, South San Francisco, San Mateo County, California, 94080, United States",
+      "18:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3322,
+      "Tuesday",
+      1,
+      8922,
+      "Arbor Bay School, 1017, Cedar Street, San Carlos, San Mateo County, California, 94070, United States",
+      "Arbor Bay School, 1017, Cedar Street, San Carlos, San Mateo County, California, 94070, United States",
+      "15:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3337,
+      "Tuesday",
+      2,
+      32421,
+      "Sunset Ridge Elementary School, 340, Inverness Drive, Pacifica, San Mateo County, California, 94044, United States",
+      "Sunset Ridge Elementary School, 340, Inverness Drive, Pacifica, San Mateo County, California, 94044, United States",
+      "14:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3351,
+      "Saturday",
+      1,
+      43822,
+      "Amber Drive School, 3500, Amber Drive, San Jose, Santa Clara County, California, 95117, United States",
+      "Amber Drive School, 3500, Amber Drive, San Jose, Santa Clara County, California, 95117, United States",
+      "11:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3360,
+      "Monday",
+      5,
+      43851,
+      "39839, Mowry School Road, Newark, Alameda County, California, 94538, United States",
+      "39839, Mowry School Road, Newark, Alameda County, California, 94538, United States",
+      "14:00",
+      "2026-09-21 05:03:01.182853-07:00"
+    ],
+    [
+      3365,
+      "Wednesday",
+      3,
+      11129,
+      "Arroyo Seco Elementary School, Kathy Way, Livermore, Alameda County, California, 94605, United States",
+      "Arroyo Seco Elementary School, Kathy Way, Livermore, Alameda County, California, 94605, United States",
+      "16:00",
+      "2026-09-17 05:04:25.693952-07:00"
+    ],
+    [
+      3378,
+      "Saturday",
+      2,
+      43972,
+      "Saint Mary's College High School, Monterey Avenue, Northbrae, Berkeley, Alameda County, California, 94702, United States",
+      "Saint Mary's College High School, Monterey Avenue, Northbrae, Berkeley, Alameda County, California, 94702, United States",
+      "22:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3388,
+      "Monday",
+      2,
+      7035,
+      "Dougherty Valley High School, 10550, Albion Road, Windemere, Dougherty Valley, San Ramon, Contra Costa County, California, 94582, United States",
+      "Dougherty Valley High School, 10550, Albion Road, Windemere, Dougherty Valley, San Ramon, Contra Costa County, California, 94582, United States",
+      "16:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3412,
+      "Thursday",
+      7,
+      44056,
+      "Washington Elementary School, 2300, Martin Luther King Junior Way, Downtown Berkeley, Berkeley, Alameda County, California, 94704, United States",
+      "Washington Elementary School, 2300, Martin Luther King Junior Way, Downtown Berkeley, Berkeley, Alameda County, California, 94704, United States",
+      "19:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3420,
+      "Friday",
+      3,
+      44069,
+      "Foster City Elementary School, Edgewater Boulevard, Foster City, San Mateo County, California, 94405, United States",
+      "Foster City Elementary School, Edgewater Boulevard, Foster City, San Mateo County, California, 94405, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3422,
+      "Friday",
+      7,
+      4686,
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "Wilcox High School, 3250, Monroe Street, Santa Clara, Santa Clara County, California, 95051, United States",
+      "15:00",
+      "2026-09-30 05:03:44.624606-07:00"
+    ],
+    [
+      3453,
+      "Monday",
+      10,
+      26902,
+      "Castro Valley High School, 19400, Santa Maria Avenue, Castro Valley, Alameda County, California, 94546, United States",
+      "Castro Valley High School, 19400, Santa Maria Avenue, Castro Valley, Alameda County, California, 94546, United States",
+      "18:30",
+      "2026-09-29 05:04:37.541464-07:00"
+    ],
+    [
+      3462,
+      "Monday",
+      10,
+      26902,
+      "Castro Valley High School, 19400, Santa Maria Avenue, Castro Valley, Alameda County, California, 94546, United States",
+      "Castro Valley High School, 19400, Santa Maria Avenue, Castro Valley, Alameda County, California, 94546, United States",
+      "18:30",
+      "2026-09-30 05:03:44.624606-07:00"
+    ]
+  ],
+  "unrecognized_rows": []
+}

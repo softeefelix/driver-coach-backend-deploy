@@ -92,11 +92,35 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
     A binding anchor is latched until explicit status removal. Every safety poll
     checks its current filler, not a fresh ranking; a delay preempts immediately.
     """
-    cfg = cfg or config()
+    invalid_config = False
+    try:
+        cfg = cfg or config()
+    except (ValueError, TypeError, OverflowError):
+        cfg = Config()
+        invalid_config = True
     previous = previous or {}
     legacy = advise_plan(plan, served_orders=served_orders, skipped_orders=skipped_orders,
                          events=events, now_minutes=now_minutes)
-    rows = insert_events(plan, events)
+    eligible_events = []
+    seen_events = set()
+    for event in events:
+        if str(event.get('status', '')).upper() in {'COMPLETED', 'CANCELLED', 'CANCELED'}:
+            continue
+        event = dict(event)
+        # Jobber id is authoritative. Older cached rows get a stable composite,
+        # not title alone (two parties can have the same title).
+        event['id'] = event.get('id') or '|'.join(str(event.get(k) or '')
+            for k in ('title', 'address', 'startTime'))
+        if event['id'] not in seen_events:
+            seen_events.add(event['id'])
+            eligible_events.append(event)
+    rows = insert_events(plan, eligible_events)
+    for row in rows:
+        if row.get('kind') == 'event':
+            source = next((e for e in eligible_events if
+                str(e.get('id') or e.get('title') or e.get('address')) == row['event_id']), {})
+            row['end_time'] = source.get('endTime')
+            row['window_start'] = source.get('startTime')
     for row in rows:
         if row.get('kind') != 'event' and school_name(row.get('address')):
             row['kind'] = 'school'
@@ -110,7 +134,7 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
                  anchors=deepcopy(anchors), candidates=[], legs=[])
 
     def finish(stop, reason, code, context=None, binding=None):
-        state = dict(choice=identity(stop), binding=binding)
+        state = dict(choice=identity(stop), sticky=identity(stop), binding=binding)
         audit.update(choice=identity(stop), reason=reason, reasonCode=code)
         return dict(plan=rows, remaining=active, next_stop=stop, reason=reason,
                     reason_code=code, anchor_context=context, state=state, audit=audit)
@@ -119,9 +143,11 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
         audit['fallback'] = detail
         out = finish(legacy['next_stop'], legacy['reason'], 'eta_unavailable')
         # Keep binding/filler memory across transient ETA failures.
-        out['state'] = previous
+        out['state'] = dict(previous, choice=identity(legacy['next_stop']))
         return out
 
+    if invalid_config:
+        return fallback('invalid chooser configuration')
     if not active:
         return finish(None, 'Plan complete', 'plan_complete')
     if not anchors:
@@ -147,7 +173,10 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
                 raise Unavailable('anchor or origin coordinates unavailable')
             key = (origin['lat'], origin['lng'], target['lat'], target['lng'])
             if key not in cache:
-                value = travel(origin, target)
+                try:
+                    value = travel(origin, target)
+                except Exception as exc:
+                    raise Unavailable('travel adapter failed') from exc
                 if (isinstance(value, bool) or not isinstance(value, (int, float)) or
                         not math.isfinite(value) or value < 0):
                     raise Unavailable('travel unavailable')
@@ -164,7 +193,9 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
             return finish(first, reason, 'anchor_binding', direct_context, identity(first))
 
         if previous.get('binding') == identity(first):
-            return bind(f'Leave now · due {fmt_clock_ampm(first.get("arrive"))}')
+            urgent = now_minutes + direct + cfg.margin >= due - cfg.buffer
+            return bind(('Leave now' if urgent else 'Anchor next') +
+                        f' · due {fmt_clock_ampm(first.get("arrive"))}')
         if now_minutes + direct + cfg.margin >= due - cfg.buffer:
             return bind(f'Leave now · due {fmt_clock_ampm(first.get("arrive"))}')
 
@@ -172,7 +203,7 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
         fillers = [by_id['stop:' + str(p.get('stop_order'))] for p in plan
                    if 'stop:' + str(p.get('stop_order')) in by_id
                    and by_id['stop:' + str(p.get('stop_order'))].get('kind') not in {'school', 'event'}]
-        sticky = next((f for f in fillers if identity(f) == previous.get('choice')), None)
+        sticky = next((f for f in fillers if identity(f) == previous.get('sticky', previous.get('choice'))), None)
         if sticky:
             fillers = [sticky] + [f for f in fillers if f is not sticky]
         for filler in fillers:
@@ -215,6 +246,6 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
             # marginal filler and oscillate with traffic estimates.
             if filler is sticky:
                 break
-        return bind(f'Leave now · due {fmt_clock_ampm(first.get("arrive"))}')
+        return bind(f'No stop fits first · due {fmt_clock_ampm(first.get("arrive"))}')
     except (Unavailable, ValueError, TypeError, OverflowError):
         return fallback('unreliable position, booking, or travel')
