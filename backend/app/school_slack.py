@@ -8,17 +8,14 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 import math
-import os
 import re
 
 from .advisor import advise_plan, clock_minutes, insert_events
 from .payload import fmt_clock_ampm
 
-FLAG = 'DRIVER_COACH_NEXT_STOP_INTELLIGENCE'
-
 
 def enabled():
-    return os.environ.get(FLAG, '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+    return True
 
 
 @dataclass(frozen=True)
@@ -32,17 +29,7 @@ class Config:
 
 
 def config():
-    fields = {'buffer': 'ANCHOR_BUFFER_MIN', 'filler_dwell': 'FILLER_DWELL_MIN',
-              'anchor_dwell': 'ANCHOR_DWELL_MIN', 'margin': 'ETA_MARGIN_MIN',
-              'hysteresis': 'SLACK_HYSTERESIS_MIN', 'max_fix_age': 'MAX_FIX_AGE_S'}
-    defaults = Config()
-    values = {}
-    for field, suffix in fields.items():
-        value = float(os.environ.get('DRIVER_COACH_' + suffix, getattr(defaults, field)))
-        if not math.isfinite(value) or value < 0 or value > 1440:
-            raise ValueError('invalid chooser configuration')
-        values[field] = value
-    return Config(**values)
+    return Config()
 
 
 def identity(stop):

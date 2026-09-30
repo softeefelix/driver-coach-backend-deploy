@@ -656,7 +656,7 @@ def resolve_live_route(
     stops = frozen_plan if frozen_plan is not None else ordered_stops_for_route(cur, route_id, dow)
     total = len(stops)
     from . import school_slack
-    use_chooser = school_slack.enabled() and frozen_plan is not None
+    use_chooser = frozen_plan is not None
     if total == 0 and not (use_chooser and events):
         return {"dow": dow, "route_cluster_id": route_id, "next_stop": None,
                 "phase": DRIVING, "shift_phase": "plan", "route_count": None, "total_stops": 0}
