@@ -60,7 +60,16 @@ MIN_TIMED_STOPS_FOR_POSITION = 5
 
 
 def dow_name(d: Optional[datetime.date] = None) -> str:
-    return _DOW[(d or datetime.date.today()).weekday()]
+    """Weekday in Pacific time.
+
+    The Render host clock is UTC. date.today() after 5pm Pacific names tomorrow,
+    so confirm freezes the wrong day's plan (often one stop or none). Skip then
+    has no next stop to show.
+    """
+    if d is None:
+        from zoneinfo import ZoneInfo
+        d = datetime.datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    return _DOW[d.weekday()]
 
 
 def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
