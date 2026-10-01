@@ -14,16 +14,26 @@ _CLOCK_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*([AaPp][Mm])\s*$")
 
 
 def clock_minutes(value: object) -> Optional[int]:
-    """Parse the cab-facing 12-hour clock, returning minutes after midnight."""
+    """Minutes after midnight for a booked time.
+
+    Master Route stores 24-hour strings ("13:00"). The cab also sends "1:00 PM".
+    A school whose time only exists in the first form never entered the override
+    window, so the route was never cut off for it.
+    """
     if not isinstance(value, str):
         return None
     match = _CLOCK_RE.match(value)
-    if not match:
-        return None
-    hour, minute, suffix = int(match.group(1)), int(match.group(2)), match.group(3).upper()
-    if not 1 <= hour <= 12 or minute > 59:
-        return None
-    return (hour % 12 + (12 if suffix == "PM" else 0)) * 60 + minute
+    if match:
+        hour, minute, suffix = int(match.group(1)), int(match.group(2)), match.group(3).upper()
+        if not 1 <= hour <= 12 or minute > 59:
+            return None
+        return (hour % 12 + (12 if suffix == "PM" else 0)) * 60 + minute
+    parts = value.strip().split(":")
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1][:2].isdigit():
+        hour, minute = int(parts[0]), int(parts[1][:2])
+        if 0 <= hour <= 23 and minute <= 59:
+            return hour * 60 + minute
+    return None
 
 
 def _label(stop: dict) -> str:

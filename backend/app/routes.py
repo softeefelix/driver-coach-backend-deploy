@@ -47,8 +47,9 @@ UP_NEXT_MAX = 4
 
 
 def _is_school_address(address: object) -> bool:
-    """Identify timetable school stops without assuming a nonexistent DB column."""
-    return isinstance(address, str) and ("school" in address.lower() or "elementary" in address.lower())
+    """Identify a school campus. See school_names.is_school_address."""
+    from .school_names import is_school_address
+    return is_school_address(address)
 
 # Position-first route selection floor (Felix road-test, Emery/13 South SF): among a
 # truck's DOW candidate clusters we pick the one NEAREST the live truck position, but
@@ -333,7 +334,7 @@ def ordered_stops_for_route(cur, route_cluster_id: int, dow: str) -> list[dict]:
     cur.execute(
         """
         SELECT rts.stop_order, rts.stop_cluster_id, rts.arrive, rts.leave_by,
-               rts.address, sc.centroid_lat, sc.centroid_long,
+               rts.address, sc.address, sc.centroid_lat, sc.centroid_long,
                rts.exp_per_visit, rts.visits
         FROM public.route_timed_stops rts
         LEFT JOIN public.stop_clusters sc
@@ -345,7 +346,7 @@ def ordered_stops_for_route(cur, route_cluster_id: int, dow: str) -> list[dict]:
     )
     out = []
     for row in cur.fetchall():
-        order, stop_cluster_id, arrive, leave_by, address, lat, lng, exp_per_visit, visits = row
+        order, stop_cluster_id, arrive, leave_by, address, cluster_address, lat, lng, exp_per_visit, visits = row
         stop = {
             "stop_order": int(order),
             "stop_cluster_id": int(stop_cluster_id) if stop_cluster_id is not None else None,
@@ -359,7 +360,7 @@ def ordered_stops_for_route(cur, route_cluster_id: int, dow: str) -> list[dict]:
         }
         # route_timed_stops has no kind column. Mark schools from the loaded route
         # address now, before the frozen snapshot reaches advise_plan.
-        if _is_school_address(address):
+        if _is_school_address(address) or _is_school_address(cluster_address):
             stop["kind"] = "school"
         out.append(stop)
     return out

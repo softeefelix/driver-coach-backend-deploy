@@ -51,10 +51,9 @@ def clock(value):
 
 
 def school_name(value):
-    # Preserve existing matches; additional whole words avoid e.g. "preparation".
-    text = str(value or '').lower()
-    return ('school' in text or 'elementary' in text or
-            bool(re.search(r'\b(academy|prep|preparatory|montessori|elem)\b', text)))
+    # Same rule as the route loader. A street named Academy is not a school.
+    from .school_names import is_school_address
+    return is_school_address(value)
 
 
 def coordinates(row):
