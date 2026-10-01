@@ -145,11 +145,26 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
     if previous.get('binding') in {identity(a) for a in anchors}:
         first = by_id[previous['binding']]
     due = minutes(first.get('arrive'))
+    name = first.get('title') or first.get('address') or 'Scheduled stop'
+
+    def clock_fallback(detail):
+        # GPS/traffic outages must never suppress a due, unserved school.
+        audit['fallback'] = detail
+        if due is not None and (now_minutes >= due - 20 or
+                                previous.get('binding') == identity(first)):
+            context = dict(name=name, due=fmt_clock_ampm(first.get('arrive')),
+                           leaveBy=clock(due - 20), driveMin=None,
+                           arriveEst=None, kind=first['kind'])
+            return finish(first, f'Leave now · {name} · due {fmt_clock_ampm(first.get("arrive"))} '
+                          '(travel unavailable; 20-minute cutoff)',
+                          'anchor_binding', context, identity(first))
+        return fallback(detail)
+
     try:
-        age = (position or {}).get('fix_age_s')
-        if (not coordinates(position) or not isinstance(age, (int, float)) or
-                not math.isfinite(age) or not 0 <= age <= cfg.max_fix_age):
-            raise Unavailable('missing or stale truck position')
+        # Parked trucks routinely retain old fixes. Use their last coordinates;
+        # keep age in the audit rather than treating it as loss of position.
+        if not coordinates(position):
+            raise Unavailable('missing truck position')
         if any(minutes(a.get('arrive')) is None for a in anchors):
             raise Unavailable('anchor has no usable booked time')
         cache = {}
@@ -176,7 +191,7 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
             driveMin=direct, arriveEst=clock(now_minutes+direct), kind=first['kind'])
 
         def bind(reason):
-            return finish(first, reason, 'anchor_binding', direct_context, identity(first))
+            return finish(first, f'{name} · {reason}', 'anchor_binding', direct_context, identity(first))
 
         if previous.get('binding') == identity(first):
             urgent = now_minutes + direct + cfg.margin >= due - cfg.buffer
@@ -203,7 +218,10 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
             origin = filler
             slack = math.inf
             chain = []
-            for anchor in anchors:
+            # Protect the next booking. An already-impossible later school
+            # chain cannot be repaired by going to the first school hours early.
+            # Later anchors remain active and get their own cutoff after this one.
+            for anchor in [first]:
                 drive = leg(origin, anchor)
                 arrival = elapsed + drive + cfg.margin
                 booked = minutes(anchor.get('arrive'))
@@ -234,4 +252,4 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
                 break
         return bind(f'No stop fits first · due {fmt_clock_ampm(first.get("arrive"))}')
     except (Unavailable, ValueError, TypeError, OverflowError):
-        return fallback('unreliable position, booking, or travel')
+        return clock_fallback('unreliable position, booking, or travel')

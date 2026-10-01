@@ -161,7 +161,7 @@ def do_signin(req: SignInRequest, schema: str = DEFAULT_SCHEMA) -> dict:
 
             # Assignment is Jobber area -> Master Route, NEVER truck GPS. The proposal
             # is shown on the client before this session receives an authoritative route.
-            proposed = assignment.resolve_assignment(driver_name, req.truck, datetime.date.today())
+            proposed = assignment.resolve_assignment(driver_name, req.truck, routes.pacific_date())
             proposed_route_id = proposed.get("route_cluster_id")
             live = (routes.resolve_live_route(cur, req.truck, route_cluster_id=proposed_route_id)
                     if proposed_route_id is not None else None)

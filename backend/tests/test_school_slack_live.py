@@ -46,10 +46,9 @@ def test_plan_finished_booking_remains(live):
     assert ns['due'] == '4:00 PM'
 
 
-def test_two_school_waiting_chain_rejects_filler(live, monkeypatch):
-    # At 2pm, first school 3:30; after waiting + 10 dwell + 20 travel + 5
-    # margin, school 2 at 4pm (arrive-by 3:45) cannot be protected.
+def test_tight_school_chain_does_not_force_early_departure(live, monkeypatch):
+    # A tight later school cannot force departure for the first school at 2pm.
     monkeypatch.setattr(eta, 'live_eta', lambda *a, **k: dict(eta_min=20, dist_mi=1, arrive_est='x'))
     ns, _ = live([stop(1, 'school', '3:30 PM'), stop(2, 'school', '4:00 PM'), stop(3)])
-    assert ns['stopOrder'] == 1
-    assert ns['reasonCode'] == 'anchor_binding'
+    assert ns['stopOrder'] == 3
+    assert ns['reasonCode'] == 'filler_before_anchor'

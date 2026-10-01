@@ -60,6 +60,11 @@ def _is_school_address(address: object) -> bool:
 MIN_TIMED_STOPS_FOR_POSITION = 5
 
 
+def pacific_date() -> datetime.date:
+    from zoneinfo import ZoneInfo
+    return datetime.datetime.now(ZoneInfo("America/Los_Angeles")).date()
+
+
 def dow_name(d: Optional[datetime.date] = None) -> str:
     """Weekday in Pacific time.
 
@@ -68,8 +73,7 @@ def dow_name(d: Optional[datetime.date] = None) -> str:
     has no next stop to show.
     """
     if d is None:
-        from zoneinfo import ZoneInfo
-        d = datetime.datetime.now(ZoneInfo("America/Los_Angeles")).date()
+        d = pacific_date()
     return _DOW[d.weekday()]
 
 
