@@ -198,6 +198,12 @@ def confirmed_cluster_leg(
     if trace is None:
         return None
     start = _nearest_trace_index(trace, truck_point)
+    # A truck that has not reached the route yet is nearest to some middle
+    # point only because that point happens to be closest in a straight line.
+    # Starting there puts the first stops behind the truck and the line is
+    # dropped. The route ahead begins at its first point.
+    if _distance_m(trace[start], truck_point) > MAX_TRACE_ANCHOR_M:
+        start = 0
     # The destination must be later in the confirmed direction of travel.  A trace
     # match behind the truck is not this leg and must not be reversed into fake nav.
     end = _nearest_trace_index(trace, next_stop, (start or 0) + 1)
