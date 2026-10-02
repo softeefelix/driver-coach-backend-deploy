@@ -13,6 +13,7 @@ line if Master Route has no usable stored trace; they never substitute a shortcu
 from __future__ import annotations
 
 import json
+import math
 import os
 import urllib.parse
 import urllib.request
@@ -25,6 +26,19 @@ OSRM_MAX_WAYPOINTS = 25
 # trace. The environment override exists for local/staging tests, not as a gate that
 # silently turns production back into pin-to-pin routing.
 MASTER_ROUTE_DEFAULT_BASE_URL = "https://master-route-web.onrender.com"
+# Conservative display guards, not routing distances. Historical parked-only
+# records can jump kilometers; more vertices alone does not make a street snake.
+# Dense Geotab history may also have gaps. Omit only the affected leg, never join
+# across missing streets or draw navigation far away from the truck/advised stop.
+MAX_TRACE_ANCHOR_M = 200.0
+MAX_TRACE_STEP_M = 250.0
+
+
+def _distance_m(a, b) -> float:
+    lat1, lat2 = math.radians(a[0]), math.radians(b[0])
+    h = (math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2)
+         * math.sin(math.radians(b[1] - a[1]) / 2) ** 2)
+    return 6371000 * 2 * math.asin(min(1.0, math.sqrt(h)))
 
 
 def _base_url() -> Optional[str]:
@@ -92,6 +106,18 @@ def _osrm_drive_path(coordinates: list[list[float]]) -> Optional[dict]:
     return {"line": line, "source": "osrm"} if len(line) >= 2 else None
 
 
+def _street_connector(origin: list[float], onto: list[float]) -> Optional[list[list[float]]]:
+    """Street path from the truck to the forward point on the stored snake.
+
+    Returns [lat, lng] points, matching the stored trace. None when no street
+    path exists — the caller omits the line rather than drawing a chord.
+    """
+    segment = _osrm_segment([origin, onto])
+    if not segment or len(segment) < 2:
+        return None
+    return [[lng, lat] for lng, lat in segment]
+
+
 def _as_lat_lng(point) -> Optional[list[float]]:
     """Validate one Master Route trace coordinate without accepting malformed JSON."""
     if not isinstance(point, (list, tuple)) or len(point) < 2:
@@ -121,7 +147,7 @@ def _route_trace(base: str, route_cluster_id: int, dow: str) -> Optional[list[li
     return trace if len(trace) >= 2 else None
 
 
-def _nearest_trace_index(trace: list[list[float]], point: tuple[float, float], start: int = 0) -> Optional[int]:
+def _nearest_trace_index(trace: list[list[float]], point: tuple[float, float] | list[float], start: int = 0) -> Optional[int]:
     """Nearest breadcrumb index, in trace order. Squared degrees is sufficient for
     selecting a local point from one route trace and avoids another routing lookup."""
     try:
@@ -153,17 +179,34 @@ def confirmed_cluster_leg(
     base = _base_url()
     if not base or not isinstance(route_cluster_id, int) or route_cluster_id < 1 or not isinstance(dow, str) or not dow:
         return None
+    truck_point, stop_point = _as_lat_lng(truck), _as_lat_lng(next_stop)
+    if truck_point is None or stop_point is None:
+        return None
     trace = _route_trace(base, route_cluster_id, dow)
     if trace is None:
         return None
-    start = _nearest_trace_index(trace, truck)
+    start = _nearest_trace_index(trace, truck_point)
     # The destination must be later in the confirmed direction of travel.  A trace
     # match behind the truck is not this leg and must not be reversed into fake nav.
     end = _nearest_trace_index(trace, next_stop, (start or 0) + 1)
     if start is None or end is None or end <= start:
         return None
+    if _distance_m(trace[end], stop_point) > MAX_TRACE_ANCHOR_M:
+        return None
+    # The line the driver follows starts at the truck and runs forward only.
+    # Projecting the truck onto the nearest stored point draws the path behind
+    # them, or starts it kilometers away when the last fix is off the route.
+    # A truck on the route keeps the stored snake. A truck off it gets the
+    # street connector from where they are to the forward point, then the snake.
     leg = trace[start:end + 1]
-    if len(leg) < 2:
+    if any(_distance_m(a, b) > MAX_TRACE_STEP_M for a, b in zip(leg, leg[1:])):
+        return None
+    if _distance_m(trace[start], truck_point) > 40:
+        connector = _street_connector(truck_point, trace[start])
+        if not connector:
+            return None
+        leg = connector[:-1] + leg
+    if len(leg) < 2 or len({tuple(p) for p in leg}) < 2:
         return None
     return {
         "line": [[lng, lat] for lat, lng in leg],
