@@ -111,11 +111,23 @@ def _street_connector(origin: list[float], onto: list[float]) -> Optional[list[l
 
     Returns [lat, lng] points, matching the stored trace. None when no street
     path exists — the caller omits the line rather than drawing a chord.
+    The public router is slower than the 4-second trace fetch, so this call
+    gets its own budget.
     """
-    segment = _osrm_segment([origin, onto])
-    if not segment or len(segment) < 2:
+    encoded = ";".join(f"{lng},{lat}" for lat, lng in (origin, onto))
+    url = OSRM_ROUTE_URL + encoded + "?" + urllib.parse.urlencode({
+        "overview": "full", "geometries": "geojson", "steps": "false",
+    })
+    result = _request(url, timeout=12.0)
+    routes = result.get("routes") if isinstance(result, dict) else None
+    geometry = (routes[0] or {}).get("geometry") if isinstance(routes, list) and routes else None
+    line = geometry.get("coordinates") if isinstance(geometry, dict) else None
+    if not isinstance(line, list) or len(line) < 2:
         return None
-    return [[lng, lat] for lng, lat in segment]
+    try:
+        return [[float(point[1]), float(point[0])] for point in line]
+    except (TypeError, ValueError, IndexError):
+        return None
 
 
 def _as_lat_lng(point) -> Optional[list[float]]:
