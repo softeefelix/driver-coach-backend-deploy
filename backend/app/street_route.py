@@ -198,12 +198,11 @@ def confirmed_cluster_leg(
     if trace is None:
         return None
     start = _nearest_trace_index(trace, truck_point)
-    # A truck that has not reached the route yet is nearest to some middle
-    # point only because that point happens to be closest in a straight line.
-    # Starting there puts the first stops behind the truck and the line is
-    # dropped. The route ahead begins at its first point.
-    if _distance_m(trace[start], truck_point) > MAX_TRACE_ANCHOR_M:
-        start = 0
+    # The line starts when the truck reaches the route, not before. A truck
+    # still driving in gets no line rather than a connector drawn from across
+    # the city. Once it is on the route, the line runs forward from the truck.
+    if start is None or _distance_m(trace[start], truck_point) > MAX_TRACE_ANCHOR_M:
+        return None
     # The destination must be later in the confirmed direction of travel.  A trace
     # match behind the truck is not this leg and must not be reversed into fake nav.
     end = _nearest_trace_index(trace, next_stop, (start or 0) + 1)
@@ -219,11 +218,10 @@ def confirmed_cluster_leg(
     leg = trace[start:end + 1]
     if any(_distance_m(a, b) > MAX_TRACE_STEP_M for a, b in zip(leg, leg[1:])):
         return None
-    if _distance_m(trace[start], truck_point) > 40:
-        connector = _street_connector(truck_point, trace[start])
-        if not connector:
-            return None
-        leg = connector[:-1] + leg
+    # Begin the line at the truck so the driver sees which way is forward.
+    # This is a few dozen meters, not a cross-city connector.
+    if 40 < _distance_m(trace[start], truck_point) <= MAX_TRACE_ANCHOR_M:
+        leg = [truck_point] + leg
     if len(leg) < 2 or len({tuple(p) for p in leg}) < 2:
         return None
     return {
