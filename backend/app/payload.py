@@ -479,17 +479,23 @@ def build_route_payload(
     # the "not fetched" default -> key omitted -> the client keeps its current state.
     if events is not None:
         payload["events"] = _public_event_rows(events)
-    # Real driving steps are optional: [] means routing had no usable street route.
-    # Do not let a compass-only OSRM step ("Drive southeast", "Continue") reach the
-    # cab, and always ship an array once routing was attempted so an empty live leg
-    # clears the prior maneuver rather than leaving stale turn text on screen.
+    # Street maneuvers for the advised leg. [] means the stored line produced no
+    # named step (or there was no stored line). Once routing ran, always ship the
+    # array so an empty leg clears the previous banner instead of leaving it up.
     if turns is not None:
+        # The maneuver builder already dropped blank streets and heading-only
+        # steps. The wire carries street, distance, and direction — nothing else.
         payload["turns"] = [
-            step for step in turns if isinstance(step, dict)
+            {
+                "street": step["street"].strip(),
+                "distance_m": int(step["distance_m"]),
+                "modifier": step.get("modifier") if isinstance(step.get("modifier"), str) else "",
+            }
+            for step in turns
+            if isinstance(step, dict)
             and isinstance(step.get("street"), str) and step["street"].strip()
-            and isinstance(step.get("instruction"), str)
-            and step["street"].strip().casefold() in step["instruction"].casefold()
-        ]
+            and isinstance(step.get("distance_m"), (int, float)) and step["distance_m"] >= 0
+        ][:3]
     # Operational fleet sales; omitted altogether when Square or Jobber is unreachable.
     # `signedIn` is resolved on the server, never guessed by the browser.
     if ticker is not None:

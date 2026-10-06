@@ -793,9 +793,12 @@ def resolve_live_route(
     turns = []
     if isinstance(map_nav, dict):
         turn_waypoints = map_nav.pop("_turn_waypoints", None)
+        # Maneuvers track the stored blue line. No stored trace means no
+        # waypoints, and no waypoints means no steps — never a pin-to-pin guess.
         if isinstance(turn_waypoints, list) and len(turn_waypoints) >= 2:
-            from . import eta as _eta
-            turns = _eta.route_steps(truck_no, turn_waypoints)
+            from .maneuvers import maneuvers_along_line
+            from .config import mapbox_token
+            turns = maneuvers_along_line(turn_waypoints, token=mapbox_token() or None)
         map_nav["driven"] = driven
         map_nav["drivenStops"] = driven_stops
 
