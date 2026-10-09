@@ -31,7 +31,10 @@ MASTER_ROUTE_DEFAULT_BASE_URL = "https://master-route-web.onrender.com"
 # Dense Geotab history may also have gaps. Omit only the affected leg, never join
 # across missing streets or draw navigation far away from the truck/advised stop.
 MAX_TRACE_ANCHOR_M = 200.0
-MAX_TRACE_STEP_M = 250.0
+# A street-router segment on a fast road can be up to about a kilometer between
+# vertices and still follow the road. A parked-only trace jumps many kilometers.
+# Reject those. Do not reject a coarse but genuine street segment.
+MAX_TRACE_STEP_M = 1200.0
 
 
 def _distance_m(a, b) -> float:
