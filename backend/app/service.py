@@ -50,7 +50,7 @@ from .config import flag_config, mapbox_token
 from .db import DEFAULT_SCHEMA, connect
 from .motion import phase_for_fix
 from .payload import build_route_payload, build_session_payload
-from .refcore import DRIVING, resolve_flags
+from .refcore import DRIVING
 from .refuel import RefuelNightBook, Reminder
 
 app = FastAPI(title="Driver Coach v1", version="1.0.0")
@@ -154,10 +154,11 @@ def do_signin(req: SignInRequest, schema: str = DEFAULT_SCHEMA) -> dict:
     session_id = str(uuid.uuid4())
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
-            # hysteresis: load prior, resolve, persist next_state (frozen for the day).
-            prior = flagstate.load_prior(cur, driver_id)
-            flags = resolve_flags(profile, prior, flag_config())
-            flagstate.save_state(cur, driver_id, flags.next_state)
+            # hysteresis: one increment per Pacific day. A later sign-in the same
+            # Pacific day keeps both counters and the coached decision as they were.
+            flags = flagstate.advance_for_signin(
+                cur, driver_id, profile, flag_config(),
+            )
 
             # Assignment is Jobber area -> Master Route, NEVER truck GPS. The proposal
             # is shown on the client before this session receives an authoritative route.
