@@ -798,7 +798,15 @@ def resolve_live_route(
         if isinstance(turn_waypoints, list) and len(turn_waypoints) >= 2:
             from .maneuvers import maneuvers_along_line
             from .config import mapbox_token
-            turns = maneuvers_along_line(turn_waypoints, token=mapbox_token() or None)
+            next_order = stop.get("stop_order") if isinstance(stop, dict) else None
+            turns = maneuvers_along_line(
+                turn_waypoints,
+                token=mapbox_token() or None,
+                truck=(position["lat"], position["lng"]) if isinstance(position, dict) else None,
+                route_cluster_id=route_id if isinstance(route_id, int) else None,
+                dow=dow if isinstance(dow, str) else None,
+                next_stop_order=next_order if isinstance(next_order, int) else None,
+            )
         map_nav["driven"] = driven
         map_nav["drivenStops"] = driven_stops
 
