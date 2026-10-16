@@ -6,7 +6,10 @@ seams + the production-ization roster/route feeds:
   GET  /driver-coach/v1/roster     the REAL truck→driver roster (replaces app.js
                                    hardcoded NAMES/TRUCKS)
   GET  /driver-coach/v1/route      the LIVE route snapshot the app polls to follow
-                                   the truck's real progress (nextStop + live phase)
+                                   the truck's real progress (nextStop + live phase).
+                                   Also carries no-idle `nudge` and `break` state.
+  POST /driver-coach/v1/break/start   start a lunch or break for this session
+  POST /driver-coach/v1/break/end     end the active lunch or break
 
 signin: {name, truck} -> Jobber driver-of-record -> REAL driver_profiles snapshot
 -> resolve_flags() (frozen for the session) -> disguise-safe payload (no boolean on
@@ -39,17 +42,18 @@ import json
 import uuid
 from typing import Any, Optional
 
+import psycopg2
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import assignment, flagstate, geotab, jobber, liveness, profiles, roster, routes
+from . import assignment, breaks, flagstate, geotab, jobber, liveness, no_idle, profiles, roster, routes
 from . import events as events_mod
 from . import scorecard
 from . import school_slack
 from .config import flag_config, mapbox_token
 from .db import DEFAULT_SCHEMA, connect
 from .motion import phase_for_fix
-from .payload import build_route_payload, build_session_payload
+from .payload import build_route_payload, build_session_payload, friendly_stop_name
 from .refcore import DRIVING
 from .refuel import RefuelNightBook, Reminder
 
@@ -106,6 +110,15 @@ class Heartbeat(BaseModel):
 class HeartbeatRequest(BaseModel):
     session_id: str
     batch: list[Heartbeat] = Field(default_factory=list)
+
+
+class BreakStartRequest(BaseModel):
+    session_id: str
+    type: str
+
+
+class BreakEndRequest(BaseModel):
+    session_id: str
 
 
 # --------------------------------------------------------------------------- #
@@ -326,6 +339,52 @@ def refuel_reminder_for_route_poll(
     return reminders[0] if reminders else None
 
 
+def _next_stop_label(stop: Optional[dict]) -> Optional[str]:
+    if not isinstance(stop, dict):
+        return None
+    label = friendly_stop_name(stop.get("address"))
+    if label:
+        return label
+    for key in ("title", "name"):
+        value = stop.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def do_start_break(req: BreakStartRequest, schema: str = DEFAULT_SCHEMA) -> dict:
+    """Start the session's lunch or break and close any open idle episode."""
+    now = no_idle.utcnow()
+    with connect(schema=schema, autocommit=False) as conn:
+        try:
+            with conn.cursor() as cur:
+                payload = breaks.start(cur, session_id=req.session_id, break_type=req.type, now=now)
+                no_idle.close_open(cur, req.session_id, now=now, reason="break")
+            conn.commit()
+            return payload
+        except breaks.BreakError as exc:
+            if exc.commit:
+                conn.commit()
+            else:
+                conn.rollback()
+            raise
+
+
+def do_end_break(req: BreakEndRequest, schema: str = DEFAULT_SCHEMA) -> dict:
+    with connect(schema=schema, autocommit=False) as conn:
+        try:
+            with conn.cursor() as cur:
+                payload = breaks.end(cur, session_id=req.session_id)
+            conn.commit()
+            return payload
+        except breaks.BreakError as exc:
+            if exc.commit:
+                conn.commit()
+            else:
+                conn.rollback()
+            raise
+
+
 def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
     """The live route state for a session (the ~15-20s poll). READ-ONLY.
 
@@ -335,6 +394,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
     routeCount and — coached only, inside the coach bundle — the updated grade.
     """
     auto_advanced = False
+    wrote_shift = False
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -426,6 +486,47 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                     served_orders=served_orders, skipped_orders=skipped_orders, events=today_events,
                     session_id=session_id, schema=schema,
                 )
+            position = live.get("position") if isinstance(live, dict) else None
+            plan = live.get("match_plan") if isinstance(live, dict) else None
+            if not plan:
+                plan = frozen_plan
+            view = no_idle.motion_view(
+                position,
+                phase=live.get("phase") if isinstance(live, dict) else None,
+                parked_stop=live.get("parked_stop") if isinstance(live, dict) else None,
+                plan=plan,
+            )
+            nudge = None
+            break_state = breaks.inactive_state()
+            # A missing migration must not take down navigation. Roll back only this
+            # savepoint; the route snapshot above still commits with the session.
+            cur.execute("SAVEPOINT driver_coach_no_idle")
+            try:
+                break_state, break_wrote = breaks.reconcile_on_poll(
+                    cur,
+                    session_id=session_id,
+                    truck_no=int(truck_no),
+                    driver_id=driver_id,
+                    fresh=view.fresh,
+                    moving=view.moving,
+                )
+                nudge, idle_wrote = no_idle.reconcile_on_poll(
+                    cur,
+                    session_id=session_id,
+                    truck_no=int(truck_no),
+                    driver_id=driver_id,
+                    driver_name=driver_name_for_events,
+                    view=view,
+                    break_active=bool(break_state.get("active")),
+                    next_stop_name=_next_stop_label(live.get("next_stop") if isinstance(live, dict) else None),
+                )
+                wrote_shift = bool(break_wrote or idle_wrote)
+                cur.execute("RELEASE SAVEPOINT driver_coach_no_idle")
+            except psycopg2.errors.UndefinedTable:
+                cur.execute("ROLLBACK TO SAVEPOINT driver_coach_no_idle")
+                nudge = None
+                break_state = breaks.inactive_state()
+                wrote_shift = False
             payload = build_route_payload(
                 next_stop=live["next_stop"],
                 route_cluster_id=live["route_cluster_id"],
@@ -444,10 +545,12 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 turns=live.get("turns"),
                 ticker=scorecard.live_ticker(driver_name_for_events or ""),
                 refuel_reminder=refuel_reminder_for_route_poll(truck_no),
+                nudge=nudge,
+                break_state=break_state,
             )
-        # The normal poll is read-only. A confirmed physical dwell is the one allowed
-        # forward-cursor transition, so commit only when that state was persisted.
-        if auto_advanced or school_slack.enabled():
+        # The normal poll is read-only. A confirmed physical dwell, or a no-idle /
+        # break transition, is persisted. School-slack audits commit on the same path.
+        if auto_advanced or school_slack.enabled() or wrote_shift:
             conn.commit()
         else:
             conn.rollback()
@@ -508,6 +611,30 @@ def get_roster() -> dict:
     try:
         return do_roster()
     except Exception as e:  # pragma: no cover - surfaced as 500 in prod
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/driver-coach/v1/break/start")
+def start_break(req: BreakStartRequest) -> dict:
+    try:
+        return do_start_break(req)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except breaks.BreakError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/driver-coach/v1/break/end")
+def end_break(req: BreakEndRequest) -> dict:
+    try:
+        return do_end_break(req)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except breaks.BreakError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    except Exception as e:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(e))
 
 

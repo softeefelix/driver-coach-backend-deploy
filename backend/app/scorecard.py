@@ -8,6 +8,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
+import threading
+import time
 import urllib.parse
 import urllib.request
 from typing import Optional
@@ -180,6 +183,111 @@ def _today_payments(token: str, day: dt.date) -> Optional[list[dict]]:
             if not cursor:
                 break
     return result
+
+
+_sale_lock = threading.Lock()
+_sale_cache: dict[str, tuple[float, Optional[list], Optional[dict]]] = {}
+_SALE_TTL_S = 15.0
+_SALE_FAIL_TTL_S = 10.0
+
+
+def clear_sale_cache() -> None:
+    with _sale_lock:
+        _sale_cache.clear()
+
+
+def _payment_counts(payment: dict) -> bool:
+    if str(payment.get("status") or "").upper() not in {"COMPLETED", "APPROVED"}:
+        return False
+    cents = (payment.get("amount_money") or {}).get("amount")
+    return isinstance(cents, (int, float)) and not isinstance(cents, bool) and cents > 0
+
+
+def _mentions_truck(payment: dict, truck_no: int) -> bool:
+    """True when a payment note, device, or reference names this truck.
+
+    ``truck 7`` / ``t7`` match truck 7. ``truck 17`` and ``t17`` do not.
+    """
+    parts = []
+    for key in ("note", "reference_id"):
+        value = payment.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    device = payment.get("device_details")
+    if isinstance(device, dict):
+        for key in ("device_name", "device_installation_id"):
+            value = device.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    text = " ".join(parts)
+    if not text:
+        return False
+    return re.search(
+        rf"(?<![A-Za-z0-9])(?:truck[\s#\-]*{int(truck_no)}|t{int(truck_no)})(?!\d)",
+        text,
+        re.IGNORECASE,
+    ) is not None
+
+
+def _cached_today_payments(now: dt.datetime) -> tuple[Optional[list], Optional[dict]]:
+    """Today's Square payments and team directory, shared across the ~20s polls."""
+    day = now.astimezone(PACIFIC).date()
+    key = day.isoformat()
+    with _sale_lock:
+        hit = _sale_cache.get(key)
+        if hit is not None and hit[0] > time.monotonic():
+            return hit[1], hit[2]
+    token = _square_token()
+    if not token:
+        with _sale_lock:
+            _sale_cache[key] = (time.monotonic() + _SALE_FAIL_TTL_S, None, None)
+        return None, None
+    team, payments = _team(token), _today_payments(token, day)
+    ttl = _SALE_TTL_S if team is not None and payments is not None else _SALE_FAIL_TTL_S
+    with _sale_lock:
+        _sale_cache[key] = (time.monotonic() + ttl, payments, team)
+    return payments, team
+
+
+def last_truck_sale(
+    *,
+    truck_no: int,
+    driver_name: str = "",
+    now: Optional[dt.datetime] = None,
+    payments: Optional[list] = None,
+    team: Optional[dict] = None,
+) -> dict:
+    """Latest completed Square sale for this truck, and whether that answer is known.
+
+    A sale counts when the payment's team member is the signed-in driver, or when
+    the payment itself names the truck. ``known`` is false when Square cannot be
+    read, and when there is no driver name to attribute an otherwise untagged
+    payment — absence is not proof of no sale in those cases. Pass ``payments``
+    and ``team`` to skip the network (tests).
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if payments is None or team is None:
+        payments, team = _cached_today_payments(now)
+    if payments is None or team is None:
+        return {"known": False, "last_sale_at": None}
+    driver_known = bool(_norm(driver_name))
+    last = None
+    matched = False
+    for payment in payments:
+        if not isinstance(payment, dict) or not _payment_counts(payment):
+            continue
+        member = team.get(payment.get("team_member_id"))
+        by_driver = driver_known and bool(member) and _norm(member) == _norm(driver_name)
+        by_truck = _mentions_truck(payment, truck_no)
+        if not (by_driver or by_truck):
+            continue
+        matched = True
+        when = _parse_dt(payment.get("created_at"))
+        if when is not None and (last is None or when > last):
+            last = when
+    if not driver_known and not matched:
+        return {"known": False, "last_sale_at": None}
+    return {"known": True, "last_sale_at": last}
 
 
 def live_ticker(signed_in: str, day: Optional[dt.date] = None) -> Optional[list[dict]]:

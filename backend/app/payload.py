@@ -89,6 +89,10 @@ def _public_event_rows(events: list) -> list[dict]:
 # MR data): 2 = "needs work"/cultivate. Never fake a 1 ("camp here") on missing data.
 _DEFAULT_GRADE = 2
 
+# Callers that did not evaluate no-idle omit the keys. The route poll passes them
+# explicitly, including null, so the iPad clears a stale nudge.
+_OMIT = object()
+
 
 def fmt_clock_ampm(value) -> Optional[str]:
     """Normalize a BOOKED/leave-by timetable value to a 12-hour 'H:MM AM/PM' string,
@@ -392,6 +396,8 @@ def build_route_payload(
     ticker: Optional[list] = None,
     here_stop: Optional[dict] = None,
     refuel_reminder: Optional[Reminder] = None,
+    nudge: object = _OMIT,
+    break_state: object = _OMIT,
 ) -> dict:
     """The disguise-safe body for GET /driver-coach/v1/route (the live poll).
 
@@ -418,6 +424,12 @@ def build_route_payload(
       - banner               an optional existing iPad banner-channel command. The
                              refuel policy supplies only {kind:"refuel"}; its approved
                              client copy and acknowledgement behavior stay client-owned.
+                             Idle nudges do not use this key.
+      - nudge                no-idle instruction, or null when the poll evaluated
+                             idle and the driver should not be nudged. Omitted only
+                             when the caller did not evaluate it.
+      - break                lunch/break state for this shift, including remaining
+                             seconds. Omitted only when the caller did not evaluate it.
 
     A NOMINAL session's poll has no `coach` key — identical disguise contract as
     build_session_payload. assert_disguise_safe re-checks the top-level forbidden set
@@ -506,5 +518,11 @@ def build_route_payload(
             grade = next_stop["grade"]
         # grade rides INSIDE the coach bundle (present-iff-coached), never top level.
         payload["coach"] = {"nextStopGrade": grade}
+    # No-idle and break state are operational facts, identical in both modes.
+    # Null nudge is meaningful: it clears a banner the previous poll raised.
+    if nudge is not _OMIT:
+        payload["nudge"] = nudge
+    if break_state is not _OMIT:
+        payload["break"] = break_state
     assert_disguise_safe(payload)
     return payload

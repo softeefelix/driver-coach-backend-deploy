@@ -20,5 +20,18 @@
     "confirm_window_s": 180,
     "serving_txn_recency_s": 90,
     "heartbeat_retention_days": 90
+  },
+  "no_idle": {
+    "no_sale_move_on_s": 90,
+    "off_stop_grace_s": 15,
+    "voice_after_s": 60,
+    "manager_alert_after_s": 180
+  },
+  "breaks": {
+    "lunch_duration_s": 1800,
+    "break_duration_s": 900,
+    "lunch_allowance": 1,
+    "break_allowance": 2,
+    "overrun_grace_s": 60
   }
 }

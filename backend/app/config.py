@@ -65,6 +65,79 @@ def liveness_config() -> dict:
     return dict(load_thresholds()["liveness"])
 
 
+def _number(raw: dict, key: str, default: float, *, minimum: float) -> float:
+    try:
+        value = float(raw.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+    if value < minimum:
+        return float(default)
+    return value
+
+
+def _whole(raw: dict, key: str, default: int, *, minimum: int) -> int:
+    try:
+        value = int(raw.get(key, default))
+    except (TypeError, ValueError):
+        return int(default)
+    if value < minimum:
+        return int(default)
+    return value
+
+
+def no_idle_settings() -> dict:
+    """No-idle nudge timing from thresholds.json.
+
+    ``off_stop_grace_s`` defaults to the motion settle-to-park debounce (15s): a
+    truck parked away from every planned pin is nudged after that grace, not after
+    the full sale window. Escalation is measured from the first banner.
+    """
+    raw = load_thresholds().get("no_idle") or {}
+    voice = _number(raw, "voice_after_s", 60, minimum=0)
+    manager = _number(raw, "manager_alert_after_s", 180, minimum=0)
+    if manager < voice:
+        manager = voice
+    return {
+        "no_sale_move_on_s": _number(raw, "no_sale_move_on_s", 90, minimum=0),
+        "off_stop_grace_s": _number(raw, "off_stop_grace_s", 15, minimum=0),
+        "voice_after_s": voice,
+        "manager_alert_after_s": manager,
+    }
+
+
+def break_settings() -> dict:
+    """Per-shift lunch/break allowances from thresholds.json.
+
+    One 30-minute lunch and two 15-minute breaks. ``overrun_grace_s`` is how far
+    past the allotment a break may run (poll lag) before it is flagged.
+    """
+    raw = load_thresholds().get("breaks") or {}
+    return {
+        "lunch_duration_s": _whole(raw, "lunch_duration_s", 1800, minimum=1),
+        "break_duration_s": _whole(raw, "break_duration_s", 900, minimum=1),
+        "lunch_allowance": _whole(raw, "lunch_allowance", 1, minimum=0),
+        "break_allowance": _whole(raw, "break_allowance", 2, minimum=0),
+        "overrun_grace_s": _whole(raw, "overrun_grace_s", 60, minimum=0),
+    }
+
+
+def max_fix_age_s() -> float:
+    """Oldest Geotab fix that may drive a no-idle nudge or a movement break-end.
+
+    ``DRIVER_COACH_MAX_FIX_AGE_S`` overrides the shared motion ``max_fix_age_s``
+    (150s). A non-numeric or negative override is ignored.
+    """
+    raw = os.environ.get("DRIVER_COACH_MAX_FIX_AGE_S")
+    if raw is not None and raw.strip() != "":
+        try:
+            value = float(raw)
+        except ValueError:
+            value = -1.0
+        if value >= 0:
+            return value
+    return float(motion_config().max_fix_age_s)
+
+
 def mapbox_token() -> str:
     """The Mapbox access token for the traffic-aware ETA service (eta.py).
 

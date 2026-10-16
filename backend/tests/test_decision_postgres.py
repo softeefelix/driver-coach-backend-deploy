@@ -25,7 +25,8 @@ def database():
                     cur.execute(f'CREATE SCHEMA {schema}')
                     cur.execute(f'SET search_path TO {schema}')
                     cur.execute("CREATE TABLE driver_coach_session (session_id uuid PRIMARY KEY, truck_no int DEFAULT 7, coached bool DEFAULT false, route_cluster_id int DEFAULT 42, driver_id text DEFAULT 'test', plan_snapshot jsonb DEFAULT '[]', served_stop_orders jsonb DEFAULT '[]', skipped_stop_orders jsonb DEFAULT '[]')")
-                    cur.execute((Path(__file__).parents[1] / 'migrations/006_school_slack_decisions.sql').read_text())
+                    for name in ('006_school_slack_decisions.sql', '007_no_idle_breaks.sql'):
+                        cur.execute((Path(__file__).parents[1] / 'migrations' / name).read_text())
             conn.commit()
         yield server.get_uri()
     finally:

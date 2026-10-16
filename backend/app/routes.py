@@ -663,6 +663,7 @@ def resolve_live_route(
         return {
             "dow": dow, "route_cluster_id": None, "next_stop": None,
             "phase": DRIVING, "shift_phase": "plan", "route_count": None, "total_stops": 0,
+            "position": position,
         }
 
     # Confirmation persists this exact source snapshot. For legacy/session-less calls we
@@ -673,7 +674,8 @@ def resolve_live_route(
     use_chooser = frozen_plan is not None
     if total == 0 and not (use_chooser and events):
         return {"dow": dow, "route_cluster_id": route_id, "next_stop": None,
-                "phase": DRIVING, "shift_phase": "plan", "route_count": None, "total_stops": 0}
+                "phase": DRIVING, "shift_phase": "plan", "route_count": None, "total_stops": 0,
+                "position": position}
 
     from .advisor import advise_plan
     now = datetime.datetime.now().astimezone().hour * 60 + datetime.datetime.now().astimezone().minute if now_minutes is None else now_minutes
@@ -817,4 +819,6 @@ def resolve_live_route(
             # Server-internal Park context.  build_route_payload exposes only the
             # resolved Here pin, never gear data or a coaching signal.
             "parked_stop": parked_stop, "driven_stops": driven_stops,
-            "match_plan": advice["plan"]}
+            "match_plan": advice["plan"],
+            # Server-internal live fix (speed, fix_age_s). Not copied onto the wire.
+            "position": position}
