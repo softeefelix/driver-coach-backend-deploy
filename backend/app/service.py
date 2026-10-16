@@ -194,6 +194,10 @@ def do_signin(req: SignInRequest, schema: str = DEFAULT_SCHEMA) -> dict:
             )
             # Operational assignment fields are byte-identical for both modes.  A later
             # friendly label belongs in assignment._candidate_objects, not this client seam.
+            # jobber_visits is today's Jobber locations ([] when Jobber is empty or down).
+            # Optional candidate area/cities/stops/match_score/likely ride on the same object.
+            if not isinstance(proposed.get("jobber_visits"), list):
+                proposed["jobber_visits"] = []
             payload["assignment"] = proposed
 
             # persist the session row (coached/arrival_voice are INTERNAL audit only,

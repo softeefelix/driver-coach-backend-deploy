@@ -134,3 +134,205 @@ def driver_area_for_day(driver_canonical: str, day: datetime.date) -> Optional[s
     if len(pool) != 1:
         return None
     return next(iter(pool))
+
+
+# Jobber province is a full state name or a postal abbreviation. Visit addresses on
+# the sign-in payload use the abbreviation ("CA"), matching a street mailing line.
+_US_STATE_ABBR = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "district of columbia": "DC", "florida": "FL", "georgia": "GA", "hawaii": "HI",
+    "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+    "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
+    "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT",
+    "vermont": "VT", "virginia": "VA", "washington": "WA", "west virginia": "WV",
+    "wisconsin": "WI", "wyoming": "WY",
+}
+_STATE_ABBRS = set(_US_STATE_ABBR.values())
+
+# Dispatch sheets abbreviate the peninsula. Visit cities and route cities share a key.
+_CITY_ALIASES = {
+    "ssf": "southsanfrancisco",
+    "southsf": "southsanfrancisco",
+    "southsanfran": "southsanfrancisco",
+}
+_CITY_ALIAS_DISPLAY = {
+    "southsanfrancisco": "South San Francisco",
+}
+
+_TRUCK_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:truck|softee|t)\s*#?\s*-?\s*(\d+)(?!\d)",
+    re.IGNORECASE,
+)
+
+
+def province_abbrev(value: Optional[str]) -> Optional[str]:
+    """Jobber `address.province` -> postal abbreviation when it is a US state."""
+    text = " ".join(str(value or "").split())
+    if not text:
+        return None
+    if re.fullmatch(r"[A-Za-z]{2}", text):
+        return text.upper()
+    return _US_STATE_ABBR.get(text.casefold(), text)
+
+
+def city_key(city: Optional[str]) -> str:
+    """Comparable city key. 'South SF' and 'South San Francisco' share one key."""
+    key = re.sub(r"[^a-z0-9]", "", (city or "").casefold())
+    return _CITY_ALIASES.get(key, key)
+
+
+def expand_city_alias(city: Optional[str]) -> Optional[str]:
+    """Display name for a dispatch abbreviation, or None when `city` is already plain."""
+    return _CITY_ALIAS_DISPLAY.get(city_key(city))
+
+
+def _truck_from_text(text: Optional[str], *, bare_number: bool = False) -> Optional[int]:
+    """A fleet truck number written as T13, Softee 13, or Truck #13.
+
+    A bare number is accepted only for a vehicle name (`"13"`). Titles are not
+    scanned that way, so a year or a street number cannot become a truck.
+    """
+    raw = " ".join(str(text or "").split())
+    if not raw:
+        return None
+    if bare_number and re.fullmatch(r"\d{1,3}", raw):
+        number = int(raw)
+        return number if number > 0 else None
+    match = _TRUCK_RE.search(raw)
+    if not match:
+        return None
+    number = int(match.group(1))
+    return number if 0 < number < 1000 else None
+
+
+def _visit_truck(visit: dict) -> Optional[int]:
+    """Truck painted on the visit: assigned vehicle, then title, job title, user name."""
+    users = ((visit.get("assignedUsers") or {}).get("nodes") or [])
+    for user in users:
+        if not isinstance(user, dict):
+            continue
+        vehicle = user.get("assignedVehicle")
+        name = vehicle.get("name") if isinstance(vehicle, dict) else None
+        truck = _truck_from_text(name, bare_number=True)
+        if truck is not None:
+            return truck
+    for text in (visit.get("title"), (visit.get("job") or {}).get("title")):
+        truck = _truck_from_text(text)
+        if truck is not None:
+            return truck
+    for user in users:
+        if not isinstance(user, dict):
+            continue
+        truck = _truck_from_text((user.get("name") or {}).get("full"))
+        if truck is not None:
+            return truck
+    return None
+
+
+def _visit_assigned_names(visit: dict) -> list[str]:
+    names = []
+    for user in ((visit.get("assignedUsers") or {}).get("nodes") or []):
+        if not isinstance(user, dict):
+            continue
+        full = (user.get("name") or {}).get("full")
+        if full:
+            names.append(full)
+    return names
+
+
+def _one_driver_match(want: str, name: str) -> bool:
+    """Match one assignee. A broken name map must not hide a later exact match."""
+    from . import events
+
+    try:
+        return events._same_driver(want, name)
+    except Exception:
+        return events._norm(name) == events._norm(want)
+
+
+def _driver_is_assigned(driver_canonical: str, names: list[str]) -> bool:
+    """True when this sign-in is one of the visit's Jobber assignees.
+
+    Uses the same Jobber<->Square match as the cruise-area resolver. A missing name
+    map or a matcher error is 'not this driver', never a failed sign-in.
+    """
+    if any(_one_driver_match(driver_canonical, name) for name in names):
+        return True
+    try:
+        square = resolve_square_name(driver_canonical)
+    except Exception:
+        return False
+    if not square or _norm(square) == _norm(driver_canonical):
+        return False
+    return any(_one_driver_match(square, name) for name in names)
+
+
+def _visit_location(visit: dict) -> tuple[Optional[str], Optional[str]]:
+    """`(city, mailing address)` from property.address. Either may be missing."""
+    addr = (visit.get("property") or {}).get("address") or {}
+    if not isinstance(addr, dict):
+        return None, None
+    street = " ".join(str(addr.get("street") or addr.get("street1") or "").split()) or None
+    city = " ".join(str(addr.get("city") or "").split()) or None
+    province = province_abbrev(addr.get("province"))
+    parts = [part for part in (street, city, province) if part]
+    return city, (", ".join(parts) or None)
+
+
+def format_assignment_visits(nodes: list, driver_canonical: str, truck: int) -> list[dict]:
+    """Today's Jobber visits in the sign-in shape.
+
+    Each row is `{city, address, truck, assigned}`. `assigned` is true when the
+    visit's users include the signing-in driver or its truck number is the truck
+    they signed in on. Visits with no city and no address are omitted: the route
+    picker cannot match them. Never raises.
+    """
+    try:
+        sign_in_truck = int(truck)
+    except (TypeError, ValueError):
+        sign_in_truck = None
+    rows: list[dict] = []
+    for visit in nodes or []:
+        if not isinstance(visit, dict):
+            continue
+        try:
+            city, address = _visit_location(visit)
+            if not city and not address:
+                continue
+            visit_truck = _visit_truck(visit)
+            assigned = _driver_is_assigned(driver_canonical, _visit_assigned_names(visit))
+            if not assigned and visit_truck is not None and visit_truck == sign_in_truck:
+                assigned = True
+            rows.append({
+                "city": city,
+                "address": address,
+                "truck": visit_truck,
+                "assigned": assigned,
+            })
+        except Exception:
+            continue
+    return rows
+
+
+def today_assignment_visits(
+    driver_canonical: str, truck: int, day: datetime.date
+) -> list[dict]:
+    """Today's visits for the sign-in assignment. `[]` on an empty day OR any Jobber error.
+
+    Never raises. Sign-in must stay usable when the token, Postgres, or Jobber is down.
+    """
+    try:
+        from . import events
+
+        nodes = events._fetch_visits(day)
+        if not nodes:
+            return []
+        return format_assignment_visits(nodes, driver_canonical, truck)
+    except Exception:
+        return []

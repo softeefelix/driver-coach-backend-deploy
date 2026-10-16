@@ -77,6 +77,11 @@ DB_CONNECT_TIMEOUT_S = 4
 # Cache ~5 min per (driver_lower, day_iso) — the visits query cost is high.
 _CACHE_TTL_S = 300
 _cache: dict[tuple[str, str, bool], tuple[float, list[dict]]] = {}
+# Raw visit nodes, shared by the events panel and sign-in assignment. Success only.
+_visits_cache: dict[str, tuple[float, list]] = {}
+# The enriched selection adds province and the assigned vehicle. A schema rejection
+# (unknown field / missing scope) sticks to the verified query for this process.
+_visits_query_basic_only = False
 
 # Jobber supplies only a street + city. Geocoding happens before these rows reach
 # advise_plan so booked events can become real map pins; the total keeps sign-in/poll
@@ -95,6 +100,22 @@ query DayVisits($after: ISO8601DateTime!, $before: ISO8601DateTime!) {
       property { address { street city } }
       job { jobType }
       assignedUsers { nodes { name { full } } }
+    }
+  }
+}
+"""
+
+# Same day window and cost cap. Province, job title, instructions, and the assigned
+# user's vehicle let sign-in build a street address and a truck number. If this
+# selection is rejected, _fetch_visits falls back to _DAY_VISITS_QUERY.
+_ASSIGNMENT_VISITS_QUERY = """
+query DayVisits($after: ISO8601DateTime!, $before: ISO8601DateTime!) {
+  visits(filter: { startAt: { after: $after, before: $before } }, first: 30) {
+    nodes {
+      id title instructions startAt endAt visitStatus
+      property { address { street city province } }
+      job { jobType title }
+      assignedUsers { nodes { name { full } assignedVehicle { name } } }
     }
   }
 }
@@ -403,16 +424,56 @@ def dispatch_titles_for_driver(driver_canonical: str, day: datetime.date) -> Opt
     return titles
 
 
+def _is_schema_error(body: object) -> bool:
+    """True when GraphQL rejected a field, so the verified query is still worth trying."""
+    if not isinstance(body, dict):
+        return False
+    errors = body.get("errors")
+    if not isinstance(errors, list) or not errors:
+        return False
+    for err in errors:
+        msg = str(err.get("message") if isinstance(err, dict) else err).casefold()
+        if (
+            "cannot query field" in msg
+            or "doesn't exist" in msg
+            or "does not exist" in msg
+            or "unknown field" in msg
+            or "undefinedfield" in msg
+        ):
+            return True
+    return False
+
+
 def _fetch_visits(day: datetime.date) -> Optional[list]:
     """Fetch the raw Pacific-day visit nodes from Jobber, READ-ONLY, within the time
     budget. On a 401 (expired token) poke the ONE refresher ONCE, re-read the token,
     and retry.
 
+    Tries the assignment selection first (province + assigned vehicle). A schema
+    rejection falls back to the verified street/city query and stays there. Any
+    other failure of that selection tries the verified query once inside the same
+    time budget, then gives up if that fails too.
+
     Returns the raw nodes list on SUCCESS (possibly an EMPTY list — a real "no visits
     today"); returns `None` on ANY failure (no token, timeout, HTTP/transport error,
     GraphQL errors, bad shape) so the caller can distinguish a trusted empty day (clear
-    the panel) from a transient blip (hold the last list). Never raises.
+    the panel) from a transient blip (hold the last list). A success, including `[]`,
+    is cached ~5 min per Pacific day so sign-in and the events panel share one round
+    trip. A failure is never cached. Never raises.
     """
+    key = day.isoformat()
+    now = time.monotonic()
+    hit = _visits_cache.get(key)
+    if hit and (now - hit[0]) < _CACHE_TTL_S:
+        return hit[1]
+    nodes = _fetch_visits_live(day)
+    if nodes is not None:
+        _visits_cache[key] = (time.monotonic(), nodes)
+    return nodes
+
+
+def _fetch_visits_live(day: datetime.date) -> Optional[list]:
+    global _visits_query_basic_only
     deadline = time.monotonic() + JOBBER_TIMEOUT_S
     after, before = _pt_day_window_utc(day)
     variables = {"after": after, "before": before}
@@ -421,29 +482,50 @@ def _fetch_visits(day: datetime.date) -> Optional[list]:
     if not token:
         return None
 
-    def _remaining() -> float:
-        return deadline - time.monotonic()
-
-    for attempt in (1, 2):
-        rem = _remaining()
-        if rem <= 0.2:
+    queries = (
+        [_DAY_VISITS_QUERY]
+        if _visits_query_basic_only
+        else [_ASSIGNMENT_VISITS_QUERY, _DAY_VISITS_QUERY]
+    )
+    refreshed = False
+    for query in queries:
+        while True:
+            rem = deadline - time.monotonic()
+            if rem <= 0.2:
+                return None
+            try:
+                body = _jobber_gql(token, query, variables, timeout=rem)
+            except urllib.error.HTTPError as e:
+                # 401 -> token expired. Poke the single refresher ONCE, re-read, retry.
+                if e.code == 401 and not refreshed:
+                    _poke_refresh(deadline)
+                    refreshed = True
+                    token = _db_load_token()
+                    if not token:
+                        return None
+                    continue
+                # A rejected selection is not an outage. The verified query still runs.
+                if query is _ASSIGNMENT_VISITS_QUERY:
+                    if e.code in (400, 422):
+                        _visits_query_basic_only = True
+                    break
+                return None
+            except Exception:
+                # The heavier selection timed out or the socket failed. One try of the
+                # verified query still fits the same budget; a second failure gives up.
+                if query is _ASSIGNMENT_VISITS_QUERY:
+                    break
+                return None
+            if isinstance(body, dict) and not body.get("errors"):
+                nodes = ((body.get("data") or {}).get("visits") or {}).get("nodes") or []
+                return nodes if isinstance(nodes, list) else None
+            if query is _ASSIGNMENT_VISITS_QUERY:
+                # Unknown field: stop asking for it. Throttle/other: try the verified
+                # query once, but ask for the richer fields again next time.
+                if _is_schema_error(body):
+                    _visits_query_basic_only = True
+                break
             return None
-        try:
-            body = _jobber_gql(token, _DAY_VISITS_QUERY, variables, timeout=rem)
-        except urllib.error.HTTPError as e:
-            # 401 -> token expired. Poke the single refresher ONCE, re-read, retry.
-            if e.code == 401 and attempt == 1:
-                _poke_refresh(deadline)
-                token = _db_load_token()
-                if not token:
-                    return None
-                continue
-            return None
-        except Exception:
-            return None
-        if not isinstance(body, dict) or body.get("errors"):
-            return None
-        return ((body.get("data") or {}).get("visits") or {}).get("nodes") or []
     return None
 
 
@@ -555,5 +637,8 @@ def get_today_events(
 
 
 def _clear_cache() -> None:
-    """Test hook: drop the per-(driver,day) cache."""
+    """Test hook: drop the per-(driver,day) cache and the shared visit-node cache."""
+    global _visits_query_basic_only
     _cache.clear()
+    _visits_cache.clear()
+    _visits_query_basic_only = False
