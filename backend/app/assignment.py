@@ -19,6 +19,13 @@ from .routes import dow_name
 
 _MASTER_ENV = os.path.expanduser("~/.hermes/secrets/master-route.env")
 
+# Sign-in picker floor. Of 220 named route-days with a timetable, 48 have 1–4
+# stops and the rest center in the low twenties (median 21). Five is the same
+# real-day floor route selection already uses, so a stub cannot appear as a
+# choosable Master Route. MIN_ROUTE_STOPS overrides it; 0 disables the filter.
+# The proposed route for this driver is never removed.
+DEFAULT_MIN_ROUTE_STOPS = 5
+
 
 def _master_database_url() -> str:
     url = os.environ.get("MASTER_ROUTE_DATABASE_URL")
@@ -115,31 +122,58 @@ def _live_rows(conn, dow: str, season_variant: str) -> list[tuple[int, str]]:
         return [(int(route_id), str(name)) for route_id, name in cur.fetchall()]
 
 
-def _candidate_rows(conn, city: str, dow: str) -> list[tuple[int, str]]:
-    rows = _all_candidate_rows(conn, dow)
-    return [(route_id, name) for route_id, name in rows if _name_for_city(name, city)]
+def _min_route_stops() -> int:
+    """Picker floor from MIN_ROUTE_STOPS. Blank, non-numeric, or negative keeps the default.
+
+    Zero is a real setting: it turns the filter off without a deploy.
+    """
+    raw = os.environ.get("MIN_ROUTE_STOPS")
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_MIN_ROUTE_STOPS
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_ROUTE_STOPS
+    if value < 0:
+        return DEFAULT_MIN_ROUTE_STOPS
+    return value
 
 
-def _all_candidate_rows(conn, dow: str) -> list[tuple[int, str]]:
+def _as_counted_row(row) -> tuple[int, str, Optional[int]]:
+    """`(route_cluster_id, name, timed_stop_count)`. A missing count means unknown."""
+    route_id = int(row[0])
+    name = str(row[1])
+    if len(row) < 3 or row[2] is None:
+        return (route_id, name, None)
+    try:
+        return (route_id, name, int(row[2]))
+    except (TypeError, ValueError):
+        return (route_id, name, None)
+
+
+def _all_candidate_rows(conn, dow: str) -> list[tuple[int, str, Optional[int]]]:
     with conn.cursor() as cur:
-        # First try: routes with timed stops on this DOW
+        # First try: routes with timed stops on this DOW, plus how many stops
+        # that day actually has. Read-only; nothing is deleted.
         cur.execute(
             """
-            SELECT DISTINCT rn.route_cluster_id, rn.name
+            SELECT rn.route_cluster_id, rn.name, count(*) AS stop_count
             FROM route_names rn
             JOIN route_timed_stops rts ON rts.route_cluster_id = rn.route_cluster_id
             WHERE COALESCE(lower(rn.status), '') <> 'retired'
               AND rn.name IS NOT NULL AND rn.name <> ''
               AND lower(rts.dow) = lower(%s)
+            GROUP BY rn.route_cluster_id, rn.name
             ORDER BY rn.name, rn.route_cluster_id
             """,
             (dow,),
         )
         rows = cur.fetchall()
         if rows:
-            return [(int(route_id), str(name)) for route_id, name in rows]
-        
-        # Fallback: ALL non-retired routes if no DOW-specific routes exist
+            return [_as_counted_row(row) for row in rows]
+
+        # Fallback: ALL non-retired routes if no DOW-specific routes exist.
+        # Their stop counts are unknown, so the picker floor does not guess them out.
         cur.execute(
             """
             SELECT DISTINCT rn.route_cluster_id, rn.name
@@ -149,17 +183,120 @@ def _all_candidate_rows(conn, dow: str) -> list[tuple[int, str]]:
             ORDER BY rn.name, rn.route_cluster_id
             """
         )
-        return [(int(route_id), str(name)) for route_id, name in cur.fetchall()]
+        return [_as_counted_row(row) for row in cur.fetchall()]
 
 
-def _candidate_objects(rows: list[tuple[int, str]]) -> list[dict]:
+def _index_stop_counts(rows) -> dict[int, Optional[int]]:
+    """route_cluster_id -> timed-stop count. None means the count is unknown."""
+    counts: dict[int, Optional[int]] = {}
+    for row in rows:
+        counted = _as_counted_row(row)
+        route_id, _name, stop_count = counted
+        if route_id not in counts:
+            counts[route_id] = stop_count
+        elif stop_count is not None and (counts[route_id] is None or stop_count > counts[route_id]):
+            counts[route_id] = stop_count
+    return counts
+
+
+def _live_stop_counts(conn, dow: str, season: str) -> dict[int, int]:
+    """Stops on the live Geotab master for this day, the equivalent of route_timed_stops.
+
+    A live master is a real route even when its timed-stop rows are sparse. Any
+    failure leaves the map empty so sign-in still builds the picker from timed stops.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT m.route_cluster_id, count(*) AS stop_count
+                FROM geotab_route_masters m
+                JOIN geotab_route_master_stops s
+                  ON s.route_cluster_id = m.route_cluster_id
+                 AND lower(s.dow) = lower(m.dow)
+                 AND s.season_variant = m.season_variant
+                WHERE m.live = TRUE AND m.active = TRUE
+                  AND lower(m.dow) = lower(%s)
+                  AND m.season_variant = %s
+                GROUP BY m.route_cluster_id
+                """,
+                (dow, season),
+            )
+            fetched = cur.fetchall()
+    except Exception:
+        return {}
+    counts: dict[int, int] = {}
+    for row in fetched:
+        if len(row) < 2:
+            continue
+        try:
+            counts[int(row[0])] = int(row[1])
+        except (TypeError, ValueError):
+            continue
+    return counts
+
+
+def _route_clears_stop_floor(
+    route_id: int,
+    proposed_id: Optional[int],
+    stop_counts: dict[int, Optional[int]],
+    geotab_counts: dict[int, int],
+    minimum: int,
+) -> bool:
+    """True when this route stays in the picker.
+
+    The proposed route always stays. A live Geotab master with enough stops stays.
+    An unknown timed-stop count stays (fallback list, or a route that was not in
+    the timed-stop query). A known count under the floor is hidden.
+    """
+    if proposed_id is not None and route_id == proposed_id:
+        return True
+    geotab_count = geotab_counts.get(route_id)
+    if geotab_count is not None and geotab_count >= minimum:
+        return True
+    if route_id not in stop_counts:
+        return True
+    timed = stop_counts[route_id]
+    if timed is None:
+        return True
+    return timed >= minimum
+
+
+def _drop_sparse_candidates(
+    result: dict,
+    stop_counts: dict[int, Optional[int]],
+    geotab_counts: dict[int, int],
+    minimum: Optional[int] = None,
+) -> None:
+    """Remove stub routes from both picker lists. Does not touch stored rows."""
+    if minimum is None:
+        minimum = _min_route_stops()
+    proposed = result.get("route_cluster_id")
+    proposed_id = int(proposed) if proposed is not None else None
+    for key in ("candidates", "all_candidates"):
+        kept = []
+        for row in result.get(key) or []:
+            if not isinstance(row, dict) or row.get("route_cluster_id") is None:
+                kept.append(row)
+                continue
+            route_id = int(row["route_cluster_id"])
+            if _route_clears_stop_floor(route_id, proposed_id, stop_counts, geotab_counts, minimum):
+                kept.append(row)
+        result[key] = kept
+
+
+def _candidate_objects(rows) -> list[dict]:
     # A later friendly label can be inserted here without changing the confirmation UI.
     seen: set[int] = set()
-    return [
-        {"route_cluster_id": route_id, "name": name}
-        for route_id, name in rows
-        if not (route_id in seen or seen.add(route_id))
-    ]
+    objects = []
+    for row in rows:
+        route_id = int(row[0])
+        name = str(row[1])
+        if route_id in seen:
+            continue
+        seen.add(route_id)
+        objects.append({"route_cluster_id": route_id, "name": name})
+    return objects
 
 
 def _truck_usual_route(conn, truck: int, dow: str, choices: list[dict]) -> Optional[dict]:
@@ -378,6 +515,8 @@ def resolve_assignment(driver_canonical: str, truck: int, day: datetime.date) ->
     season = _season_variant(day)
     area = None
     stops_by_route: dict[int, list[dict]] = {}
+    stop_counts: dict[int, Optional[int]] = {}
+    geotab_counts: dict[int, int] = {}
     try:
         visits = jobber.today_assignment_visits(driver_canonical, truck, day)
     except Exception:
@@ -391,7 +530,10 @@ def resolve_assignment(driver_canonical: str, truck: int, day: datetime.date) ->
             # Always return the whole day as an explicit escape hatch.  `candidates`
             # stays area-scoped for the first picker paint; `all_candidates` is used
             # only after the driver asks to search outside that area.
-            all_choices = _candidate_objects(_all_candidate_rows(conn, dow))
+            all_rows = _all_candidate_rows(conn, dow)
+            stop_counts = _index_stop_counts(all_rows)
+            geotab_counts = _live_stop_counts(conn, dow, season)
+            all_choices = _candidate_objects(all_rows)
             live = [(i, n) for i, n in _live_rows(conn, dow, season) if _name_for_city(n, area)] if area else []
             if len(live) == 1:
                 route_id, name = live[0]
@@ -400,16 +542,15 @@ def resolve_assignment(driver_canonical: str, truck: int, day: datetime.date) ->
                           "dow": dow, "candidates": _candidate_objects(live),
                           "all_candidates": all_choices}
             else:
-                candidates = _candidate_rows(conn, area, dow) if area else _all_candidate_rows(conn, dow)
+                named_for_city = [row for row in all_rows if area and _name_for_city(row[1], area)]
+                candidates = named_for_city if area else list(all_rows)
                 # A recognized city may still have no named route for this day.  Do not
                 # strand its driver in an empty picker: fall back to every active route
                 # available today, just as we do when Jobber has no city at all.
                 if area and not candidates:
-                    candidates = _all_candidate_rows(conn, dow)
+                    candidates = list(all_rows)
                 choices = _candidate_objects(candidates)
-                city_matched = bool(area) and bool(_candidate_rows(conn, area, dow) or (
-                    [(i, n) for i, n in _live_rows(conn, dow, season) if _name_for_city(n, area)]
-                ))
+                city_matched = bool(area) and bool(named_for_city or live)
                 # A lone candidate is a proposal only when Jobber supplied an area. With
                 # no area, even one visible row is not evidence that it is this driver's
                 # route; remain in the explicit picker path rather than guessing.
@@ -435,19 +576,28 @@ def resolve_assignment(driver_canonical: str, truck: int, day: datetime.date) ->
         try:
             conn = _master_connection()
             try:
-                choices = _candidate_objects(_all_candidate_rows(conn, dow))
+                all_rows = _all_candidate_rows(conn, dow)
+                stop_counts = _index_stop_counts(all_rows)
+                geotab_counts = _live_stop_counts(conn, dow, season)
+                choices = _candidate_objects(all_rows)
                 stops_by_route = _route_stops(conn, [row["route_cluster_id"] for row in choices], dow)
             finally:
                 conn.close()
         except Exception:
             choices = []
             stops_by_route = {}
+            stop_counts = {}
+            geotab_counts = {}
         result = {"route_cluster_id": None, "route_name": None, "source": "candidate",
                   "season_variant": season, "confidence": "picker", "area": area,
                   "dow": dow, "candidates": choices, "all_candidates": choices}
     if not isinstance(visits, list):
         visits = []
     result["jobber_visits"] = visits
+    try:
+        _drop_sparse_candidates(result, stop_counts, geotab_counts)
+    except Exception:
+        pass
     try:
         _annotate_candidates(result, stops_by_route)
     except Exception:

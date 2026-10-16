@@ -13,8 +13,9 @@ DAY = datetime.date(2026, 10, 16)  # Friday, in-school season
 
 
 @pytest.fixture(autouse=True)
-def _clear_jobber_cache():
+def _clear_jobber_cache(monkeypatch):
     events._clear_cache()
+    monkeypatch.delenv("MIN_ROUTE_STOPS", raising=False)
     yield
     events._clear_cache()
 
@@ -449,3 +450,236 @@ def test_signin_puts_jobber_visits_on_assignment_and_fills_a_missing_list(monkey
     proposed.pop("jobber_visits")
     body = service.do_signin(service.SignInRequest(name="Emery N", truck=13), schema="driver_coach")
     assert body["assignment"]["jobber_visits"] == []
+
+
+class _StopCursor:
+    """Dispatches the sign-in reads, including timed-stop counts and live master counts."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.rows = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def execute(self, sql, params=None):
+        compact = " ".join(sql.split())
+        self.conn.statements.append(compact)
+        upper = compact.upper()
+        assert "DELETE " not in upper
+        assert "UPDATE " not in upper
+        assert "INSERT " not in upper
+        if "geotab_route_master_stops" in compact:
+            self.rows = self.conn.geotab_counts
+        elif "geotab_route_masters" in compact:
+            self.rows = self.conn.live
+        elif "JOIN route_timed_stops" in compact:
+            self.rows = self.conn.candidates
+        elif "FROM route_timed_stops" in compact:
+            self.rows = self.conn.stops
+        elif "FROM route_names" in compact:
+            self.rows = self.conn.fallback
+        else:
+            self.rows = []
+
+    def fetchall(self):
+        return list(self.rows)
+
+
+class _StopConn:
+    def __init__(self, live, candidates, stops, geotab_counts=None, fallback=None):
+        self.live = live
+        self.candidates = candidates
+        self.stops = stops
+        self.geotab_counts = geotab_counts or []
+        self.fallback = fallback or []
+        self.statements = []
+
+    def cursor(self):
+        return _StopCursor(self)
+
+    def close(self):
+        return None
+
+
+def _ids(rows):
+    return [row["route_cluster_id"] for row in rows]
+
+
+def test_min_route_stops_defaults_to_five_and_honors_overrides(monkeypatch):
+    monkeypatch.delenv("MIN_ROUTE_STOPS", raising=False)
+    assert assignment._min_route_stops() == 5
+    assert assignment.DEFAULT_MIN_ROUTE_STOPS == 5
+    for raw in ("", "   ", "nope", "-3", "1.5"):
+        monkeypatch.setenv("MIN_ROUTE_STOPS", raw)
+        assert assignment._min_route_stops() == 5
+    monkeypatch.setenv("MIN_ROUTE_STOPS", "2")
+    assert assignment._min_route_stops() == 2
+    monkeypatch.setenv("MIN_ROUTE_STOPS", "0")
+    assert assignment._min_route_stops() == 0
+
+
+def test_picker_hides_routes_with_fewer_than_five_stops(monkeypatch):
+    counted = [
+        (1, "RedwoodCity-Connecticut", 22),
+        (2, "SanJose-Lincoln", 5),
+        (4, "Hayward-Main", 4),
+        (5, "DalyCity-Mission", 1),
+        (3, "Oakland-Broadway", 18),
+        (6, "Fremont-Auto", 2),
+    ]
+    monkeypatch.setattr(jobber, "dispatch_area_for_day", lambda *a, **k: None)
+    monkeypatch.setattr(jobber, "driver_area_for_day", lambda *a, **k: None)
+    monkeypatch.setattr(events, "_fetch_visits", lambda day: [])
+    monkeypatch.setattr(assignment, "_master_connection", lambda: _StopConn([], counted, []))
+
+    result = assignment.resolve_assignment("Emery N", 13, DAY)
+
+    assert result["route_cluster_id"] is None
+    assert _ids(result["candidates"]) == [1, 2, 3]
+    assert _ids(result["all_candidates"]) == [1, 2, 3]
+    assert result["candidates"][1]["name"] == "SanJose-Lincoln"
+
+
+def test_min_route_stops_env_lowers_and_disables_the_floor(monkeypatch):
+    counted = [
+        (1, "RedwoodCity-Connecticut", 22),
+        (5, "DalyCity-Mission", 1),
+        (6, "Fremont-Auto", 2),
+    ]
+    monkeypatch.setattr(jobber, "dispatch_area_for_day", lambda *a, **k: None)
+    monkeypatch.setattr(jobber, "driver_area_for_day", lambda *a, **k: None)
+    monkeypatch.setattr(events, "_fetch_visits", lambda day: [])
+
+    monkeypatch.setenv("MIN_ROUTE_STOPS", "2")
+    monkeypatch.setattr(assignment, "_master_connection", lambda: _StopConn([], counted, []))
+    result = assignment.resolve_assignment("Emery N", 13, DAY)
+    assert _ids(result["candidates"]) == [1, 6]
+    assert _ids(result["all_candidates"]) == [1, 6]
+
+    monkeypatch.setenv("MIN_ROUTE_STOPS", "0")
+    monkeypatch.setattr(assignment, "_master_connection", lambda: _StopConn([], counted, []))
+    result = assignment.resolve_assignment("Emery N", 13, DAY)
+    assert _ids(result["candidates"]) == [1, 5, 6]
+    assert _ids(result["all_candidates"]) == [1, 5, 6]
+
+
+def test_proposed_live_route_stays_even_with_one_stop(monkeypatch):
+    counted = [
+        (11, "RedwoodCity-Stub", 1),
+        (1, "RedwoodCity-Connecticut", 22),
+        (5, "DalyCity-Mission", 1),
+        (2, "SanJose-Lincoln", 18),
+    ]
+    monkeypatch.setattr(jobber, "dispatch_area_for_day", lambda *a, **k: "Redwood City")
+    monkeypatch.setattr(events, "_fetch_visits", lambda day: [])
+    monkeypatch.setattr(
+        assignment,
+        "_master_connection",
+        lambda: _StopConn([(11, "RedwoodCity-Stub")], counted, []),
+    )
+
+    result = assignment.resolve_assignment("Emery N", 13, DAY)
+
+    assert result["route_cluster_id"] == 11
+    assert result["route_name"] == "RedwoodCity-Stub"
+    assert result["source"] == "live"
+    assert _ids(result["candidates"]) == [11]
+    assert _ids(result["all_candidates"]) == [11, 1, 2]
+
+
+def test_proposed_city_route_stays_when_it_is_the_only_area_match(monkeypatch):
+    counted = [
+        (11, "RedwoodCity-Stub", 2),
+        (5, "DalyCity-Mission", 1),
+        (2, "SanJose-Lincoln", 18),
+    ]
+    monkeypatch.setattr(jobber, "dispatch_area_for_day", lambda *a, **k: "Redwood City")
+    monkeypatch.setattr(events, "_fetch_visits", lambda day: [])
+    monkeypatch.setattr(assignment, "_master_connection", lambda: _StopConn([], counted, []))
+
+    result = assignment.resolve_assignment("Emery N", 13, DAY)
+
+    assert result["route_cluster_id"] == 11
+    assert result["confidence"] == "medium"
+    assert _ids(result["candidates"]) == [11]
+    assert _ids(result["all_candidates"]) == [11, 2]
+
+
+def test_area_picker_drops_sparse_routes_from_both_lists(monkeypatch):
+    counted = [
+        (1, "RedwoodCity-Connecticut", 22),
+        (11, "RedwoodCity-Stub", 1),
+        (2, "SanJose-Lincoln", 18),
+        (6, "Fremont-Auto", 3),
+    ]
+    monkeypatch.setattr(jobber, "dispatch_area_for_day", lambda *a, **k: "Redwood City")
+    monkeypatch.setattr(events, "_fetch_visits", lambda day: [])
+    monkeypatch.setattr(assignment, "_master_connection", lambda: _StopConn([], counted, []))
+
+    result = assignment.resolve_assignment("Emery N", 13, DAY)
+
+    assert result["route_cluster_id"] is None
+    assert result["confidence"] == "picker"
+    assert _ids(result["candidates"]) == [1]
+    assert _ids(result["all_candidates"]) == [1, 2]
+
+
+def test_live_master_with_a_full_stop_list_is_not_hidden_for_sparse_timed_rows(monkeypatch):
+    counted = [
+        (4, "Hayward-Main", 1),
+        (1, "RedwoodCity-Connecticut", 22),
+    ]
+    monkeypatch.setattr(jobber, "dispatch_area_for_day", lambda *a, **k: None)
+    monkeypatch.setattr(jobber, "driver_area_for_day", lambda *a, **k: None)
+    monkeypatch.setattr(events, "_fetch_visits", lambda day: [])
+    monkeypatch.setattr(
+        assignment,
+        "_master_connection",
+        lambda: _StopConn([], counted, [], geotab_counts=[(4, 20)]),
+    )
+
+    result = assignment.resolve_assignment("Emery N", 13, DAY)
+
+    assert result["route_cluster_id"] is None
+    assert _ids(result["candidates"]) == [4, 1]
+    assert _ids(result["all_candidates"]) == [4, 1]
+
+
+def test_short_live_master_does_not_keep_a_sparse_route(monkeypatch):
+    counted = [
+        (4, "Hayward-Main", 1),
+        (1, "RedwoodCity-Connecticut", 22),
+    ]
+    monkeypatch.setattr(jobber, "dispatch_area_for_day", lambda *a, **k: None)
+    monkeypatch.setattr(jobber, "driver_area_for_day", lambda *a, **k: None)
+    monkeypatch.setattr(events, "_fetch_visits", lambda day: [])
+    monkeypatch.setattr(
+        assignment,
+        "_master_connection",
+        lambda: _StopConn([], counted, [], geotab_counts=[(4, 3)]),
+    )
+
+    result = assignment.resolve_assignment("Emery N", 13, DAY)
+
+    assert _ids(result["candidates"]) == [1]
+    assert _ids(result["all_candidates"]) == [1]
+
+
+def test_fallback_routes_without_a_stop_count_stay_visible(monkeypatch):
+    monkeypatch.setattr(jobber, "dispatch_area_for_day", lambda *a, **k: None)
+    monkeypatch.setattr(jobber, "driver_area_for_day", lambda *a, **k: None)
+    monkeypatch.setattr(events, "_fetch_visits", lambda day: [])
+    monkeypatch.setattr(
+        assignment,
+        "_master_connection",
+        lambda: _StopConn([], [], [], fallback=[(8, "Oakland-Broadway"), (9, "Fremont-Auto")]),
+    )
+
+    result = assignment.resolve_assignment("Emery N", 13, DAY)
+
+    assert _ids(result["candidates"]) == [8, 9]
+    assert _ids(result["all_candidates"]) == [8, 9]
