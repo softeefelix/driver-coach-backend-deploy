@@ -15,7 +15,7 @@ from typing import Optional
 import psycopg2
 
 from . import jobber
-from .routes import dow_name
+from .routes import dow_name, latest_build_sql
 
 _MASTER_ENV = os.path.expanduser("~/.hermes/secrets/master-route.env")
 
@@ -114,12 +114,17 @@ def _live_rows(conn, dow: str, season_variant: str) -> list[tuple[int, str]]:
             LEFT JOIN route_names rn ON rn.route_cluster_id = m.route_cluster_id
             WHERE m.live = TRUE AND m.active = TRUE
               AND lower(m.dow) = lower(%s)
-              AND m.season_variant = %s
-            ORDER BY m.route_cluster_id
+              AND m.season_variant IN (%s, '')
+            ORDER BY m.route_cluster_id, (m.season_variant = '')
             """,
             (dow, season_variant),
         )
-        return [(int(route_id), str(name)) for route_id, name in cur.fetchall()]
+        # One row per route: the exact season tag wins, else the blank (all-season)
+        # tag, matching Master Route web's school -> '' -> timed-plan order.
+        seen: dict[int, str] = {}
+        for route_id, name in cur.fetchall():
+            seen.setdefault(int(route_id), str(name))
+        return list(seen.items())
 
 
 def _min_route_stops() -> int:
@@ -163,6 +168,7 @@ def _all_candidate_rows(conn, dow: str) -> list[tuple[int, str, Optional[int]]]:
             WHERE COALESCE(lower(rn.status), '') <> 'retired'
               AND rn.name IS NOT NULL AND rn.name <> ''
               AND lower(rts.dow) = lower(%s)
+              AND """ + latest_build_sql("rts") + """
             GROUP BY rn.route_cluster_id, rn.name
             ORDER BY rn.name, rn.route_cluster_id
             """,
@@ -217,7 +223,13 @@ def _live_stop_counts(conn, dow: str, season: str) -> dict[int, int]:
                  AND s.season_variant = m.season_variant
                 WHERE m.live = TRUE AND m.active = TRUE
                   AND lower(m.dow) = lower(%s)
-                  AND m.season_variant = %s
+                  AND m.season_variant = COALESCE(
+                      (SELECT m2.season_variant FROM geotab_route_masters m2
+                        WHERE m2.route_cluster_id = m.route_cluster_id
+                          AND lower(m2.dow) = lower(m.dow)
+                          AND m2.live AND m2.active
+                          AND m2.season_variant IN (%s, '')
+                        ORDER BY (m2.season_variant = '') LIMIT 1), '~none~')
                 GROUP BY m.route_cluster_id
                 """,
                 (dow, season),
@@ -393,6 +405,7 @@ def _route_stops(conn, route_ids: list[int], dow: str) -> dict[int, list[dict]]:
                 FROM route_timed_stops
                 WHERE route_cluster_id IN %s
                   AND lower(dow) = lower(%s)
+                  AND """ + latest_build_sql() + """
                 ORDER BY route_cluster_id, stop_order
                 """,
                 (tuple(ids), dow),

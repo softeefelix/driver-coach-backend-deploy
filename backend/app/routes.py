@@ -65,6 +65,22 @@ def pacific_date() -> datetime.date:
     return datetime.datetime.now(ZoneInfo("America/Los_Angeles")).date()
 
 
+
+# Latest planned-stop build only. The nightly builder rewrites every route-day it
+# rebuilds with one shared generated_at, but never deletes route-days it skipped,
+# so 1,096 rows from Jul 10-Oct 17 lingered and were served by weekday. A row is
+# current when it belongs to the newest build (12h window absorbs a slow build).
+LATEST_BUILD_WINDOW = "interval '12 hours'"
+
+
+def latest_build_sql(alias: str = "") -> str:
+    """SQL predicate keeping only rows from the newest route_timed_stops build."""
+    col = f"{alias}.generated_at" if alias else "generated_at"
+    return (
+        f"{col} >= (SELECT max(generated_at) FROM public.route_timed_stops)"
+        f" - {LATEST_BUILD_WINDOW}"
+    )
+
 def dow_name(d: Optional[datetime.date] = None) -> str:
     """Weekday in Pacific time.
 
@@ -136,6 +152,7 @@ def _candidate_clusters_for_truck_dow(cur, truck_no: int, dow: str) -> list[dict
         LEFT JOIN public.route_timed_stops rts
                ON rts.route_cluster_id = ass.route_cluster_id
               AND lower(rts.dow) = lower(%s)
+              AND """ + latest_build_sql("rts") + """
         WHERE ass.truck_number = %s AND lower(ass.dow) = lower(%s)
               AND ass.route_cluster_id IS NOT NULL
         GROUP BY ass.route_cluster_id
@@ -170,6 +187,7 @@ def _candidate_clusters_for_truck_dow(cur, truck_no: int, dow: str) -> list[dict
         LEFT JOIN public.stop_clusters sc
                ON sc.stop_cluster_id = rts.stop_cluster_id
         WHERE rts.route_cluster_id IN %s AND lower(rts.dow) = lower(%s)
+              AND """ + latest_build_sql("rts") + """
         """,
         (ids, dow),
     )
@@ -247,6 +265,7 @@ def next_stop_for_route(
                ON sc.stop_cluster_id = rts.stop_cluster_id
         WHERE rts.route_cluster_id = %s AND lower(rts.dow) = lower(%s)
               AND rts.stop_order > %s
+              AND """ + latest_build_sql("rts") + """
         ORDER BY rts.stop_order
         LIMIT 1
         """,
@@ -280,6 +299,7 @@ def route_benchmark(cur, route_cluster_id: int, dow: str) -> dict:
         SELECT avg(exp_per_visit) FROM public.route_timed_stops
         WHERE route_cluster_id = %s AND lower(dow) = lower(%s)
               AND exp_per_visit IS NOT NULL
+              AND """ + latest_build_sql() + """
         """,
         (route_cluster_id, dow),
     )
@@ -287,6 +307,7 @@ def route_benchmark(cur, route_cluster_id: int, dow: str) -> dict:
     route_mean = float(row[0]) if row and row[0] is not None else None
     cur.execute(
         "SELECT avg(exp_per_visit) FROM public.route_timed_stops WHERE exp_per_visit IS NOT NULL"
+        " AND " + latest_build_sql()
     )
     row = cur.fetchone()
     global_mean = float(row[0]) if row and row[0] is not None else None
@@ -344,6 +365,7 @@ def ordered_stops_for_route(cur, route_cluster_id: int, dow: str) -> list[dict]:
         LEFT JOIN public.stop_clusters sc
                ON sc.stop_cluster_id = rts.stop_cluster_id
         WHERE rts.route_cluster_id = %s AND lower(rts.dow) = lower(%s)
+              AND """ + latest_build_sql("rts") + """
         ORDER BY rts.stop_order
         """,
         (route_cluster_id, dow),
