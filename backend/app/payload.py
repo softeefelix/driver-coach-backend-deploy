@@ -398,6 +398,7 @@ def build_route_payload(
     refuel_reminder: Optional[Reminder] = None,
     nudge: object = _OMIT,
     break_state: object = _OMIT,
+    plan_source: Optional[str] = None,
 ) -> dict:
     """The disguise-safe body for GET /driver-coach/v1/route (the live poll).
 
@@ -441,6 +442,8 @@ def build_route_payload(
         # that 1768 remains authoritative after sign-in; it is never inferred from GPS.
         "route": {
             "routeClusterId": route_cluster_id,
+            # 'master' = Andrew's approved master; 'algorithm' = nightly timed build.
+            **({"planSource": plan_source} if plan_source else {}),
             "nextStop": build_next_stop(next_stop, route_cluster_id, live_eta),
             # A Park-at-pin snapshot retains the physical pin separately while the
             # already-served cursor advances to the following unserved planned stop.

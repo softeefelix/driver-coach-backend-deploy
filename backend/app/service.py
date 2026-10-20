@@ -263,6 +263,7 @@ def do_confirm_assignment(req: ConfirmAssignmentRequest, schema: str = DEFAULT_S
                 route_count=live["route_count"], up_next=live.get("up_next"),
                 map_nav=live.get("map"), mapbox_token=mapbox_token() or None,
                 turns=live.get("turns"),
+                plan_source=live.get("plan_source"),
                 ticker=scorecard.live_ticker(jobber.name_from_driver_id(driver_id) or ""),
             )
         conn.commit()
@@ -547,6 +548,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 # Today's ONE_OFF Jobber events (operational, both modes identical).
                 events=today_events,
                 turns=live.get("turns"),
+                plan_source=live.get("plan_source"),
                 ticker=scorecard.live_ticker(driver_name_for_events or ""),
                 refuel_reminder=refuel_reminder_for_route_poll(truck_no),
                 nudge=nudge,

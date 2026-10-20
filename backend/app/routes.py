@@ -255,6 +255,12 @@ def next_stop_for_route(
 ) -> Optional[dict]:
     """The next planned stop (stop_order > after_order) for a route-day, joined to
     its coordinates. after_order=0 -> the first stop (fresh sign-in)."""
+    from . import master_plan
+    master = master_plan.resolve_master(cur, route_cluster_id, dow, pacific_date())
+    if master is not None:
+        for stop in master_plan.master_stops(cur, master):
+            if stop["stop_order"] > after_order:
+                return stop
     cur.execute(
         """
         SELECT rts.stop_order, rts.stop_cluster_id, rts.arrive, rts.leave_by,
@@ -285,6 +291,7 @@ def next_stop_for_route(
         "lng": float(lng) if lng is not None else None,
         "exp_per_visit": float(exp_per_visit) if exp_per_visit is not None else None,
         "visits": int(visits) if visits is not None else None,
+        "plan_source": "algorithm",
     }
 
 
@@ -353,9 +360,20 @@ def grade_signals(
     )
 
 
-def ordered_stops_for_route(cur, route_cluster_id: int, dow: str) -> list[dict]:
+def ordered_stops_for_route(cur, route_cluster_id: int, dow: str,
+                            day: Optional[datetime.date] = None) -> list[dict]:
     """Every planned stop for a route-day, in order, joined to coordinates.
-    READ-ONLY. Used by the live route feed to follow the truck's progression."""
+    READ-ONLY. Used by the live route feed to follow the truck's progression.
+
+    With SERVE_MASTER=approved|all and a qualifying master, the master's stops are
+    served verbatim (plan_source='master'); otherwise the latest timed build
+    (plan_source='algorithm')."""
+    from . import master_plan
+    master = master_plan.resolve_master(cur, route_cluster_id, dow, day or pacific_date())
+    if master is not None:
+        served = master_plan.master_stops(cur, master)
+        if served:
+            return served
     cur.execute(
         """
         SELECT rts.stop_order, rts.stop_cluster_id, rts.arrive, rts.leave_by,
@@ -383,6 +401,7 @@ def ordered_stops_for_route(cur, route_cluster_id: int, dow: str) -> list[dict]:
             "lng": float(lng) if lng is not None else None,
             "exp_per_visit": float(exp_per_visit) if exp_per_visit is not None else None,
             "visits": int(visits) if visits is not None else None,
+            "plan_source": "algorithm",
         }
         # route_timed_stops has no kind column. Mark schools from the loaded route
         # address now, before the frozen snapshot reaches advise_plan.
@@ -842,5 +861,6 @@ def resolve_live_route(
             # resolved Here pin, never gear data or a coaching signal.
             "parked_stop": parked_stop, "driven_stops": driven_stops,
             "match_plan": advice["plan"],
+            "plan_source": (stops[0].get("plan_source") if stops and isinstance(stops[0], dict) else None) or "algorithm",
             # Server-internal live fix (speed, fix_age_s). Not copied onto the wire.
             "position": position}
