@@ -12,32 +12,23 @@ identical for every driver — {title, startTime, address, status}. NO $, NO gra
 coached content. `events` rides on the /route + signin payload in BOTH modes and the
 disguise test asserts the two modes are byte-identical (see payload.assert_disguise_safe).
 
-TOKEN — READ-ONLY consumer, NEVER refresh (jobber-automation single-refresher rule):
-the ONLY Jobber-token refresher in the fleet is softeedashboard's server.py on Render.
-This module READS the fleet token from Postgres `softy_dashboard_app_kv` key
-`jobber_tokens_fleet` (app 9bcc2676, which has the needed scopes). On a 401 ONLY it
-POSTs the Render poke-refresh endpoint and re-reads the row — it NEVER runs its own
-refresh grant. This mirrors fleet-monitor/fleet_check.py's `_db_load_tokens` +
-`jobber_gql`, but WITHOUT the self-refresh path (which fleet_check owns as the
-primary refresher; the driver-coach backend must not be a second refresher).
+SOURCE — NO JOBBER CLIENT HERE (Felix 2026-10-20). The backend reads the visits that
+Hermes publishes to `driver_coach_test.events_today` (one row per Pacific day, events
+only, never tokens; dc_test_host has SELECT on that table only). Hermes's single Jobber
+reader rewrites events_today_cache.json and that row hourly 07-10 and every 15 min
+11-21 PT, with a version stamp and a diff vs the previous publish (reassignments show
+up as a changed assignedUsers).
 
-GRACEFUL DEGRADATION — LOCKED CONTRACT (Felix 2026-09-17, reaffirmed by Warden): the
-public function `get_today_events(...)` ALWAYS returns a `list` — it NEVER returns
-`None` and NEVER raises. Both a successful "no events today" AND any failure return the
-SAME thing on the wire: `[]` (panel hidden, map full-width). This is the locked
-graceful-degradation rule ("token/Jobber error/timeout -> [] (panel hidden)"): a
-cancelled/reassigned booking, a Pacific-day rollover, OR a Jobber/token/Postgres outage
-must ALL clear the operational panel rather than leave stale/wrong booking info directing
-staff to a gig that may no longer exist. Showing nothing is safe; showing a stale event
-during an outage is not.
+DEGRADATION — "EVENTS UNKNOWN", NEVER SILENT (Felix 2026-10-20, supersedes the
+2026-09-17 "[] on failure" rule). `get_today_events` still returns a list and never
+raises, but a failure (no row, failed pull, stale row, DB error) is now distinguishable:
+`get_today_events_with_status` returns status "unknown" and the payload carries
+`eventsStatus: "unknown"`, so the cab shows "Events unknown" instead of an empty panel.
+Success is cached 60 s per (driver, day); failure is never cached.
 
-The success/failure distinction lives ONLY in CACHING, not in the returned value: a
-SUCCESSFUL Jobber round-trip (incl. an empty `[]`) is cached ~5 min per (driver, day) to
-bound the costly visits query; a FAILURE (no token, DB down, Jobber error/timeout <=4s
-budget, bad shape, exception) returns `[]` but is NEVER cached, so the very next poll
-retries Jobber immediately instead of serving a cached blank for 5 minutes. `_fetch_visits`
-returns `None` INTERNALLY to signal "failure, don't cache" vs a real empty `[]`; that
-internal `None` is converted to a public `[]` here and never leaks past this module.
+ONE_OFF jobs are events: they ride `events` and take precedence over the remaining
+stops. RECURRING jobs (Bingo Night, weekly school stops) are returned separately by
+`scheduled_visits_for_driver` and appear as normal stops at their booked time.
 
 Maker: Forge. Reviewer of record: Warden. Nothing here deploys without Felix.
 """
@@ -45,8 +36,8 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Optional
@@ -57,31 +48,30 @@ from .config import mapbox_token
 from .db import load_database_url
 from .payload import fmt_clock_ampm
 
-# ── Constants (mirror fleet_check.py's working values) ────────────────────────
-JOBBER_GQL = "https://api.getjobber.com/api/graphql"
-JOBBER_VER = "2026-02-17"
-FLEET_TOKENS_KEY = "jobber_tokens_fleet"
-# The ONE refresher (softeedashboard on Render). We only POKE it on a 401 — we never
-# run our own refresh grant (single-refresher rule, jobber-automation skill).
-REFRESH_POKE_URL = "https://softeedashboard.onrender.com/api/jobber/refresh-token"
-
 PACIFIC = ZoneInfo("America/Los_Angeles")
 
-# Total wall-clock budget for the whole Jobber round-trip. The route poll / sign-in
-# must not stall on a slow Jobber; past this we give up and return [] (panel hidden).
-JOBBER_TIMEOUT_S = 4.0
 # DB connect budget is inside the same overall spirit — a slow cold Render Postgres
 # must not hang sign-in. Kept short; a miss just means [] (panel hidden).
 DB_CONNECT_TIMEOUT_S = 4
 
-# Cache ~5 min per (driver_lower, day_iso) — the visits query cost is high.
-_CACHE_TTL_S = 300
+# Cache 60 s per (driver_lower, day_iso). The visits now come from one Postgres row
+# (driver_coach_test.events_today) that Hermes republishes every 15 min, so a short
+# cache costs one indexed read a minute and a reassignment reaches the cab within ~1 min
+# of the publish.
+_CACHE_TTL_S = 60
+
+# EVENTS FEED (Felix 2026-10-20): the backend no longer calls Jobber. Hermes's single
+# Jobber reader (idle_live_monitor.load_event_windows via fleet_check's token path,
+# cron "Driver Coach Events Feed") rewrites events_today_cache.json and publishes the
+# same visits to this table. dc_test_host has SELECT on this table only — no token.
+EVENTS_TABLE = os.environ.get("DRIVER_COACH_EVENTS_TABLE", "driver_coach_test.events_today")
+# Publishes run hourly 07-10 and every 15 min 11-21 PT. Older than this = unknown.
+EVENTS_MAX_AGE_S = int(os.environ.get("DRIVER_COACH_EVENTS_MAX_AGE_S", str(75 * 60)))
+# Last feed read per day: {"status": "ok"|"unknown", "version": int|None, "reason": str}
+_feed_state: dict[str, dict] = {}
 _cache: dict[tuple[str, str, bool], tuple[float, list[dict]]] = {}
 # Raw visit nodes, shared by the events panel and sign-in assignment. Success only.
 _visits_cache: dict[str, tuple[float, list]] = {}
-# The enriched selection adds province and the assigned vehicle. A schema rejection
-# (unknown field / missing scope) sticks to the verified query for this process.
-_visits_query_basic_only = False
 
 # Jobber supplies only a street + city. Geocoding happens before these rows reach
 # advise_plan so booked events can become real map pins; the total keeps sign-in/poll
@@ -89,38 +79,6 @@ _visits_query_basic_only = False
 MAPBOX_GEOCODE_URL = "https://api.mapbox.com/search/geocode/v6/forward"
 GEOCODE_TIMEOUT_S = 2.0
 GEOCODE_TOTAL_TIMEOUT_S = 4.0
-
-# The verified working query (card §VERIFIED JOBBER MECHANICS; probed live today).
-# `first: 30` is the visits-query cost cap — NEVER raise it.
-_DAY_VISITS_QUERY = """
-query DayVisits($after: ISO8601DateTime!, $before: ISO8601DateTime!) {
-  visits(filter: { startAt: { after: $after, before: $before } }, first: 30) {
-    nodes {
-      id title startAt endAt visitStatus
-      property { address { street city } }
-      job { jobType }
-      assignedUsers { nodes { name { full } } }
-    }
-  }
-}
-"""
-
-# Same day window and cost cap. Province, job title, instructions, and the assigned
-# user's vehicle let sign-in build a street address and a truck number. If this
-# selection is rejected, _fetch_visits falls back to _DAY_VISITS_QUERY.
-_ASSIGNMENT_VISITS_QUERY = """
-query DayVisits($after: ISO8601DateTime!, $before: ISO8601DateTime!) {
-  visits(filter: { startAt: { after: $after, before: $before } }, first: 30) {
-    nodes {
-      id title instructions startAt endAt visitStatus
-      property { address { street city province } }
-      job { jobType title }
-      assignedUsers { nodes { name { full } assignedVehicle { name } } }
-    }
-  }
-}
-"""
-
 
 # ── Name matching (reuse the existing Jobber<->Square resolution seam) ─────────
 def _norm(name: Optional[str]) -> str:
@@ -185,9 +143,7 @@ def filter_and_format(nodes: list, driver_canonical: str) -> list[dict]:
             continue
         addr = (v.get("property") or {}).get("address") or {}
         address = ", ".join(p for p in (addr.get("street"), addr.get("city")) if p) or None
-        from .school_slack import enabled
-        extra = ({'id': v.get('id'), 'endTime': _fmt_pt_time(v.get('endAt'))}
-                 if enabled() else {})
+        extra = {'id': v.get('id'), 'endTime': _fmt_pt_time(v.get('endAt'))}
         rows.append(
             {
                 **extra,
@@ -302,231 +258,79 @@ def _pt_day_window_utc(day: datetime.date) -> tuple[str, str]:
     )
 
 
-# ── Token (READ-ONLY) + Jobber GraphQL (poke-refresh on 401, never self-grant) ─
-def _db_load_token() -> Optional[str]:
-    """Read the fleet Jobber access token from Postgres, READ-ONLY. None on any miss.
-
-    Reuses db.load_database_url() (the same shared Render Postgres the backend already
-    talks to). If the hosted backend cannot reach that Postgres this simply returns
-    None and the panel stays hidden — we do NOT hardcode creds in the public mirror.
-    """
-    import psycopg2
-
-    try:
-        conn = psycopg2.connect(load_database_url(), connect_timeout=DB_CONNECT_TIMEOUT_S)
-    except Exception:
-        return None
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT value FROM softy_dashboard_app_kv WHERE key = %s",
-                (FLEET_TOKENS_KEY,),
-            )
-            row = cur.fetchone()
-    except Exception:
-        return None
-    finally:
-        conn.close()
-    if not row or not row[0]:
-        return None
-    try:
-        tokens = row[0] if isinstance(row[0], dict) else json.loads(row[0])
-    except (ValueError, TypeError):
-        return None
-    tok = tokens.get("access_token")
-    return tok or None
-
-
-def _poke_refresh(deadline: float) -> None:
-    """Ask the ONE refresher (softeedashboard on Render) to refresh the token.
-
-    We NEVER run our own refresh grant (single-refresher rule). This is a fire-and-
-    (best-effort)-forget POST; the refresher rotates the DB row and we re-read it.
-    Bounded by the remaining time budget; any error is swallowed (caller falls back).
-    """
-    remaining = deadline - time.monotonic()
-    if remaining <= 0.2:
-        return
-    try:
-        req = urllib.request.Request(REFRESH_POKE_URL, data=b"{}", method="POST",
-                                     headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=min(remaining, JOBBER_TIMEOUT_S))
-    except Exception:
-        return
-
-
-def _jobber_gql(token: str, query: str, variables: dict, timeout: float) -> Optional[dict]:
-    """POST a GraphQL query. Returns the parsed body, or raises urllib.error.HTTPError
-    (so the caller can detect a 401), or returns None on any other transport error."""
-    data = json.dumps({"query": query, "variables": variables}).encode()
-    req = urllib.request.Request(JOBBER_GQL, data=data, headers={
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "X-JOBBER-GRAPHQL-VERSION": JOBBER_VER,
-    })
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read())
-
-
-_DAY_TASKS_QUERY = """
-query DayTasks($after: ISO8601DateTime!, $before: ISO8601DateTime!) {
-  tasks(filter: { startAt: { after: $after, before: $before } }, first: 50) {
-    nodes {
-      title
-      assignedUsers { nodes { name { full } } }
-    }
-  }
-}
-"""
-
-
 def dispatch_titles_for_driver(driver_canonical: str, day: datetime.date) -> Optional[list[str]]:
-    """Titles of today's Jobber tasks assigned to this driver.
-
-    The cruise sheet is a task, not a visit. A miss here is None so the caller
-    does not invent a city from last week's sales. Never raises.
-    """
-    deadline = time.monotonic() + JOBBER_TIMEOUT_S
-    after, before = _pt_day_window_utc(day)
-    token = _db_load_token()
-    if not token:
-        return None
-    body = None
-    for attempt in (1, 2):
-        try:
-            body = _jobber_gql(token, _DAY_TASKS_QUERY, {"after": after, "before": before},
-                               timeout=max(deadline - time.monotonic(), 0.5))
-        except Exception:
-            return None
-        if isinstance(body, dict) and not body.get("errors"):
-            break
-        throttled = any("throttl" in str(e.get("message") or "").casefold()
-                        for e in ((body or {}).get("errors") or []) if isinstance(e, dict))
-        if attempt == 1 and throttled and deadline - time.monotonic() > 8:
-            time.sleep(6)
-            continue
-        return None
-    nodes = ((body.get("data") or {}).get("tasks") or {}).get("nodes") or []
-    titles = []
-    for task in nodes:
-        if not isinstance(task, dict):
-            continue
-        assigned = [
-            (user.get("name") or {}).get("full")
-            for user in ((task.get("assignedUsers") or {}).get("nodes") or [])
-            if isinstance(user, dict)
-        ]
-        if not any(_same_driver(driver_canonical, n) for n in assigned if n):
-            continue
-        title = " ".join(str(task.get("title") or "").split())
-        if title:
-            titles.append(title)
-    return titles
-
-
-def _is_schema_error(body: object) -> bool:
-    """True when GraphQL rejected a field, so the verified query is still worth trying."""
-    if not isinstance(body, dict):
-        return False
-    errors = body.get("errors")
-    if not isinstance(errors, list) or not errors:
-        return False
-    for err in errors:
-        msg = str(err.get("message") if isinstance(err, dict) else err).casefold()
-        if (
-            "cannot query field" in msg
-            or "doesn't exist" in msg
-            or "does not exist" in msg
-            or "unknown field" in msg
-            or "undefinedfield" in msg
-        ):
-            return True
-    return False
+    """Cruise-sheet task titles. The backend no longer calls Jobber (events feed,
+    Felix 2026-10-20), and the Hermes feed carries visits, not tasks, so this is a
+    miss (None): the caller already treats None as "do not invent a city"."""
+    return None
 
 
 def _fetch_visits(day: datetime.date) -> Optional[list]:
-    """Fetch the raw Pacific-day visit nodes from Jobber, READ-ONLY, within the time
-    budget. On a 401 (expired token) poke the ONE refresher ONCE, re-read the token,
-    and retry.
+    """Raw Pacific-day visit nodes from the Hermes events feed table, READ-ONLY.
 
-    Tries the assignment selection first (province + assigned vehicle). A schema
-    rejection falls back to the verified street/city query and stays there. Any
-    other failure of that selection tries the verified query once inside the same
-    time budget, then gives up if that fails too.
-
-    Returns the raw nodes list on SUCCESS (possibly an EMPTY list — a real "no visits
-    today"); returns `None` on ANY failure (no token, timeout, HTTP/transport error,
-    GraphQL errors, bad shape) so the caller can distinguish a trusted empty day (clear
-    the panel) from a transient blip (hold the last list). A success, including `[]`,
-    is cached ~5 min per Pacific day so sign-in and the events panel share one round
-    trip. A failure is never cached. Never raises.
+    Returns the nodes list on SUCCESS (possibly empty: a real "no visits today") and
+    `None` when the feed is unknown: no row for the day, the last Jobber pull failed
+    (status='error'), the row is older than EVENTS_MAX_AGE_S, or the read failed. The
+    reason is kept in feed_state(day) so the cab can say "Events unknown" instead of
+    silently showing nothing. Success is cached _CACHE_TTL_S; failure is not. Never raises.
     """
     key = day.isoformat()
     now = time.monotonic()
     hit = _visits_cache.get(key)
     if hit and (now - hit[0]) < _CACHE_TTL_S:
         return hit[1]
-    nodes = _fetch_visits_live(day)
+    nodes = _fetch_visits_db(day)
     if nodes is not None:
         _visits_cache[key] = (time.monotonic(), nodes)
     return nodes
 
 
-def _fetch_visits_live(day: datetime.date) -> Optional[list]:
-    global _visits_query_basic_only
-    deadline = time.monotonic() + JOBBER_TIMEOUT_S
-    after, before = _pt_day_window_utc(day)
-    variables = {"after": after, "before": before}
+def feed_state(day: Optional[datetime.date] = None) -> dict:
+    """{"status": "ok"|"unknown", "version": int|None, "reason": str} for the last read."""
+    day = day or datetime.datetime.now(PACIFIC).date()
+    return dict(_feed_state.get(day.isoformat()) or
+                {"status": "unknown", "version": None, "reason": "not read yet"})
 
-    token = _db_load_token()
-    if not token:
+
+def _fetch_visits_db(day: datetime.date) -> Optional[list]:
+    import psycopg2
+
+    def unknown(reason: str, version=None):
+        _feed_state[day.isoformat()] = {"status": "unknown", "version": version, "reason": reason}
         return None
 
-    queries = (
-        [_DAY_VISITS_QUERY]
-        if _visits_query_basic_only
-        else [_ASSIGNMENT_VISITS_QUERY, _DAY_VISITS_QUERY]
-    )
-    refreshed = False
-    for query in queries:
-        while True:
-            rem = deadline - time.monotonic()
-            if rem <= 0.2:
-                return None
-            try:
-                body = _jobber_gql(token, query, variables, timeout=rem)
-            except urllib.error.HTTPError as e:
-                # 401 -> token expired. Poke the single refresher ONCE, re-read, retry.
-                if e.code == 401 and not refreshed:
-                    _poke_refresh(deadline)
-                    refreshed = True
-                    token = _db_load_token()
-                    if not token:
-                        return None
-                    continue
-                # A rejected selection is not an outage. The verified query still runs.
-                if query is _ASSIGNMENT_VISITS_QUERY:
-                    if e.code in (400, 422):
-                        _visits_query_basic_only = True
-                    break
-                return None
-            except Exception:
-                # The heavier selection timed out or the socket failed. One try of the
-                # verified query still fits the same budget; a second failure gives up.
-                if query is _ASSIGNMENT_VISITS_QUERY:
-                    break
-                return None
-            if isinstance(body, dict) and not body.get("errors"):
-                nodes = ((body.get("data") or {}).get("visits") or {}).get("nodes") or []
-                return nodes if isinstance(nodes, list) else None
-            if query is _ASSIGNMENT_VISITS_QUERY:
-                # Unknown field: stop asking for it. Throttle/other: try the verified
-                # query once, but ask for the richer fields again next time.
-                if _is_schema_error(body):
-                    _visits_query_basic_only = True
-                break
-            return None
-    return None
+    try:
+        conn = psycopg2.connect(load_database_url(), connect_timeout=DB_CONNECT_TIMEOUT_S)
+    except Exception:
+        return unknown("database unreachable")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT version, status, visits, EXTRACT(EPOCH FROM (now() - published_at)), error "
+                f"FROM {EVENTS_TABLE} WHERE service_date = %s",
+                (day,),
+            )
+            row = cur.fetchone()
+    except Exception:
+        return unknown("events table unreadable")
+    finally:
+        conn.close()
+    if not row:
+        return unknown("no events published for today yet")
+    version, status, visits, age_s, _error = row
+    if status != "ok":
+        return unknown("last Jobber pull failed", version)
+    if age_s is not None and float(age_s) > EVENTS_MAX_AGE_S:
+        return unknown("events feed is stale", version)
+    if isinstance(visits, str):
+        try:
+            visits = json.loads(visits)
+        except ValueError:
+            return unknown("events row unreadable", version)
+    if not isinstance(visits, list):
+        return unknown("events row unreadable", version)
+    _feed_state[day.isoformat()] = {"status": "ok", "version": version, "reason": ""}
+    return visits
 
 
 # ── Fleet ticker inputs (same Jobber fetch; never a second client) ────────────
@@ -636,9 +440,55 @@ def get_today_events(
         return []
 
 
+def get_today_events_with_status(
+    driver_canonical: str, day: Optional[datetime.date] = None
+) -> tuple[list[dict], dict]:
+    """(rows, {"status": "ok"|"unknown", "version": int|None}). Never raises."""
+    try:
+        day = day or datetime.datetime.now(PACIFIC).date()
+        rows = get_today_events(driver_canonical, day)
+        state = feed_state(day)
+        return rows, {"status": state["status"], "version": state.get("version")}
+    except Exception:
+        return [], {"status": "unknown", "version": None}
+
+
+def scheduled_visits_for_driver(driver_canonical: str, day: Optional[datetime.date] = None) -> list[dict]:
+    """Today's RECURRING Jobber visits for this driver as plain timed stops.
+
+    Rows: {kind: "visit", id, title, address, startTime, endTime}. They never take
+    precedence over the plan (Master Route rule); they are shown at their booked time.
+    """
+    try:
+        day = day or datetime.datetime.now(PACIFIC).date()
+        if not driver_canonical or not str(driver_canonical).strip():
+            return []
+        nodes = _fetch_visits(day) or []
+        out = []
+        for v in nodes:
+            if not isinstance(v, dict) or (v.get("job") or {}).get("jobType") != "RECURRING":
+                continue
+            assigned = [(n.get("name") or {}).get("full")
+                        for n in ((v.get("assignedUsers") or {}).get("nodes") or []) if isinstance(n, dict)]
+            if not _driver_matches(driver_canonical, [a for a in assigned if a]):
+                continue
+            addr = (v.get("property") or {}).get("address") or {}
+            out.append({
+                "kind": "visit", "id": v.get("id"), "title": v.get("title") or "Scheduled visit",
+                "address": ", ".join(p for p in (addr.get("street"), addr.get("city")) if p) or None,
+                "startTime": _fmt_pt_time(v.get("startAt")), "endTime": _fmt_pt_time(v.get("endAt")),
+                "_sort": v.get("startAt") or "",
+            })
+        out.sort(key=lambda r: r["_sort"])
+        for r in out:
+            r.pop("_sort", None)
+        return out
+    except Exception:
+        return []
+
+
 def _clear_cache() -> None:
     """Test hook: drop the per-(driver,day) cache and the shared visit-node cache."""
-    global _visits_query_basic_only
     _cache.clear()
     _visits_cache.clear()
-    _visits_query_basic_only = False
+    _feed_state.clear()

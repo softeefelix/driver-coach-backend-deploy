@@ -74,7 +74,11 @@ _MAP_ALLOWED_KEYS = ("truck", "line", "stops", "driven", "drivenStops")
 # the same driver. Each row carries ONLY what/when/where + a Jobber status; it must
 # NEVER carry a grade/coached/voice key (that would turn an operational list into a
 # coaching signal). assert_disguise_safe re-checks every event row against these.
-_EVENT_ALLOWED_KEYS = ("title", "startTime", "address", "status")
+# endTime + leaveBy (Felix 2026-10-20): operational timing, identical in both modes.
+_EVENT_ALLOWED_KEYS = ("title", "startTime", "endTime", "leaveBy", "address", "status")
+# Feed state: "ok" | "unknown". "unknown" makes the cab say "Events unknown" rather
+# than silently showing nothing when the Hermes feed failed or is stale.
+_EVENTS_STATUS_VALUES = ("ok", "unknown")
 
 
 def _public_event_rows(events: list) -> list[dict]:
@@ -310,6 +314,9 @@ def assert_disguise_safe(payload: dict) -> bool:
     # EVENTS: an operational booking list, ALLOWED on the wire and IDENTICAL in both
     # modes. Every row must carry ONLY the allowed what/when/where/status keys — never
     # a grade/coached/voice key that would smuggle a coaching signal into the list.
+    status = payload.get("eventsStatus")
+    if status is not None and status not in _EVENTS_STATUS_VALUES:
+        raise ValueError("disguise violation: eventsStatus must be ok|unknown")
     events = payload.get("events")
     if events is not None:
         if not isinstance(events, list):
@@ -335,6 +342,7 @@ def build_session_payload(
     phase: Optional[str] = None,
     live_eta: Optional[dict] = None,
     events: Optional[list] = None,
+    events_status: Optional[dict] = None,
 ) -> dict:
     """Assemble the disguise-safe session payload the client consumes.
 
@@ -366,6 +374,10 @@ def build_session_payload(
     # panel; events=None is only the "not fetched" default -> omitted, client unchanged.
     if events is not None:
         payload["events"] = _public_event_rows(events)
+    if events_status is not None:
+        payload["eventsStatus"] = "ok" if events_status.get("status") == "ok" else "unknown"
+        if isinstance(events_status.get("version"), int):
+            payload["eventsVersion"] = events_status["version"]
     if flags.coached:
         # the per-stop grade (1|2) rides INSIDE the coach bundle. Read it from the
         # resolved stop; a coached stop with no computed grade (no route / missing
@@ -392,6 +404,7 @@ def build_route_payload(
     map_nav: Optional[dict] = None,
     mapbox_token: Optional[str] = None,
     events: Optional[list] = None,
+    events_status: Optional[dict] = None,
     turns: Optional[list] = None,
     ticker: Optional[list] = None,
     here_stop: Optional[dict] = None,
@@ -494,6 +507,10 @@ def build_route_payload(
     # the "not fetched" default -> key omitted -> the client keeps its current state.
     if events is not None:
         payload["events"] = _public_event_rows(events)
+    if events_status is not None:
+        payload["eventsStatus"] = "ok" if events_status.get("status") == "ok" else "unknown"
+        if isinstance(events_status.get("version"), int):
+            payload["eventsVersion"] = events_status["version"]
     # Street maneuvers for the advised leg. [] means the stored line produced no
     # named step (or there was no stored line). Once routing ran, always ship the
     # array so an empty leg clears the previous banner instead of leaving it up.

@@ -1,6 +1,5 @@
 """Sign-in assignment carries today's Jobber visits and optional route-match fields."""
 import datetime
-import urllib.error
 
 import pytest
 
@@ -130,79 +129,92 @@ def test_events_formatter_ignores_the_extra_visit_fields():
     assert "truck" not in rows[0]
 
 
-def test_verified_visits_query_stays_capped_and_enriched_query_is_separate():
-    assert "first: 30" in events._DAY_VISITS_QUERY
-    assert "province" not in events._DAY_VISITS_QUERY
-    assert "assignedVehicle" not in events._DAY_VISITS_QUERY
-    assert "first: 30" in events._ASSIGNMENT_VISITS_QUERY
-    assert "province" in events._ASSIGNMENT_VISITS_QUERY
-    assert "assignedVehicle" in events._ASSIGNMENT_VISITS_QUERY
+class _FeedConn:
+    """Fake psycopg2 connection serving one driver_coach_test.events_today row."""
+
+    def __init__(self, row, calls):
+        self.row, self.calls = row, calls
+
+    def cursor(self):
+        conn = self
+
+        class C:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, sql, params):
+                conn.calls.append((sql, params))
+
+            def fetchone(self):
+                return conn.row
+        return C()
+
+    def close(self):
+        pass
 
 
-def test_schema_rejection_falls_back_to_the_verified_query_and_stays_there(monkeypatch):
+def _feed(monkeypatch, row):
+    import psycopg2
     calls = []
+    monkeypatch.setattr(events, "load_database_url", lambda: "postgresql://fake")
+    monkeypatch.setattr(psycopg2, "connect", lambda *a, **k: _FeedConn(row, calls))
+    return calls
+
+
+def test_backend_has_no_jobber_client():
+    """Felix 2026-10-20: one Jobber reader (Hermes). The backend reads the feed table."""
+    import inspect
+    src = inspect.getsource(events)
+    assert "api.getjobber.com" not in src
+    assert "softy_dashboard_app_kv" not in src
+    assert "refresh-token" not in src
+    assert events.dispatch_titles_for_driver("Emery N", DAY) is None
+
+
+def test_feed_row_is_read_and_cached_60s(monkeypatch):
     node = {"id": "v1", "property": {"address": {"street": "1 Main", "city": "Hayward"}}}
-
-    def gql(token, query, variables, timeout):
-        calls.append(query)
-        if "assignedVehicle" in query:
-            return {"errors": [{"message": 'Cannot query field "assignedVehicle" on type "User".'}]}
-        return {"data": {"visits": {"nodes": [node]}}}
-
-    monkeypatch.setattr(events, "_db_load_token", lambda: "tok")
-    monkeypatch.setattr(events, "_jobber_gql", gql)
+    calls = _feed(monkeypatch, (7, "ok", [node], 120.0, None))
     assert events._fetch_visits(DAY) == [node]
+    assert events._fetch_visits(DAY) == [node]
+    assert len(calls) == 1
+    assert "driver_coach_test.events_today" in calls[0][0]
+    assert events._CACHE_TTL_S == 60
+    assert events.feed_state(DAY) == {"status": "ok", "version": 7, "reason": ""}
+
+
+@pytest.mark.parametrize("row,reason", [
+    (None, "no events published for today yet"),
+    ((3, "error", [], 60.0, "boom"), "last Jobber pull failed"),
+    ((3, "ok", [], 99999.0, None), "events feed is stale"),
+])
+def test_feed_failure_is_unknown_and_not_cached(monkeypatch, row, reason):
+    calls = _feed(monkeypatch, row)
+    assert events._fetch_visits(DAY) is None
+    assert events._fetch_visits(DAY) is None
     assert len(calls) == 2
-    events._visits_cache.clear()
-    assert events._fetch_visits(DAY) == [node]
-    assert len(calls) == 3
-    assert "assignedVehicle" not in calls[-1]
+    assert events.feed_state(DAY)["status"] == "unknown"
+    assert events.feed_state(DAY)["reason"] == reason
 
 
-def test_successful_visit_fetch_is_cached_and_failure_is_not(monkeypatch):
-    calls = {"n": 0}
-
-    def gql(token, query, variables, timeout):
-        calls["n"] += 1
-        return {"data": {"visits": {"nodes": []}}}
-
-    monkeypatch.setattr(events, "_db_load_token", lambda: "tok")
-    monkeypatch.setattr(events, "_jobber_gql", gql)
-    assert events._fetch_visits(DAY) == []
-    assert events._fetch_visits(DAY) == []
-    assert calls["n"] == 1
-
-    events._clear_cache()
-    calls["n"] = 0
-
-    def throttled(token, query, variables, timeout):
-        calls["n"] += 1
-        return {"errors": [{"message": "Throttled"}]}
-
-    monkeypatch.setattr(events, "_jobber_gql", throttled)
-    assert events._fetch_visits(DAY) is None
-    assert calls["n"] == 2  # enriched query failed, verified query was still tried
-    assert events._fetch_visits(DAY) is None
-    assert calls["n"] == 4  # a throttle does not stick, and the miss is not cached
+def test_events_with_status_reports_unknown(monkeypatch):
+    _feed(monkeypatch, None)
+    rows, status = events.get_today_events_with_status("Leila Temp", DAY)
+    assert rows == [] and status["status"] == "unknown"
 
 
-def test_expired_token_pokes_the_refresher_once(monkeypatch):
-    seen = []
-
-    def gql(token, query, variables, timeout):
-        seen.append(token)
-        if token == "old":
-            raise urllib.error.HTTPError(
-                "https://api.getjobber.com/api/graphql", 401, "unauthorized", {}, None
-            )
-        return {"data": {"visits": {"nodes": [{"id": "ok"}]}}}
-
-    tokens = iter(["old", "new"])
-    monkeypatch.setattr(events, "_db_load_token", lambda: next(tokens))
-    monkeypatch.setattr(events, "_poke_refresh", lambda deadline: seen.append("poke"))
-    monkeypatch.setattr(events, "_jobber_gql", gql)
-    assert events._fetch_visits(DAY) == [{"id": "ok"}]
-    assert seen == ["old", "poke", "new"]
+def test_recurring_visits_are_scheduled_stops_not_events(monkeypatch):
+    bingo = {"id": "r1", "title": "Bingo Night", "startAt": "2026-10-17T01:00:00Z",
+             "endAt": "2026-10-17T02:00:00Z", "visitStatus": "TODAY",
+             "job": {"jobType": "RECURRING"},
+             "property": {"address": {"street": "9 Elm", "city": "Hayward"}},
+             "assignedUsers": {"nodes": [{"name": {"full": "Emery N"}}]}}
+    _feed(monkeypatch, (1, "ok", [bingo], 10.0, None))
+    assert events.filter_and_format([bingo], "Emery N") == []
+    rows = events.scheduled_visits_for_driver("Emery N", DAY)
+    assert rows[0]["kind"] == "visit" and rows[0]["startTime"] == "6:00 PM"
 
 
 class _Cursor:

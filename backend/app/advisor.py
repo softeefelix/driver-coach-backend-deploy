@@ -10,6 +10,10 @@ from copy import deepcopy
 from typing import Iterable, Optional
 
 
+# Fallback (no live ETA) leave-by for a ONE_OFF event: pinned this many minutes before
+# its booked start. The live chooser (school_slack.choose) uses ETA + buffer instead.
+EVENT_FALLBACK_LEAVE_MIN = 20
+
 _CLOCK_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*([AaPp][Mm])\s*$")
 
 
@@ -51,8 +55,12 @@ def insert_events(plan: Iterable[dict], events: Iterable[dict]) -> list[dict]:
     for event in events or []:
         if not isinstance(event, dict) or not event.get("address") or not event.get("startTime"):
             continue
+        # RECURRING Jobber visits ride along as kind "visit": shown at their booked time,
+        # never an anchor and never ahead of the plan (Master Route rule 2026-10-20).
+        kind = "visit" if event.get("kind") == "visit" else "event"
         rows.append({
-            "kind": "event",
+            "kind": kind,
+            "end_time": event.get("endTime"),
             "event_id": str(event.get("id") or event.get("title") or event["address"]),
             "title": event.get("title") or "Booked event",
             "address": event["address"],
@@ -98,7 +106,11 @@ def advise_plan(
 
     def active(stop: dict) -> bool:
         order = stop.get("stop_order")
-        return stop.get("kind") == "event" or (order not in served_orders and order not in skipped_orders)
+        if stop.get("kind") in ("event", "visit"):
+            # A booking stays active until it ENDS (started-not-ended still counts).
+            end = clock_minutes(stop.get("end_time"))
+            return end is None or now_minutes < end
+        return order not in served_orders and order not in skipped_orders
 
     remaining = [stop for stop in frozen if active(stop)]
     active_rows = [stop for stop in all_rows if active(stop)]
@@ -107,9 +119,18 @@ def advise_plan(
     urgent = []
     for stop in active_rows:
         due = clock_minutes(stop.get("arrive"))
-        if due is None or due < now_minutes or due - now_minutes > deadline_horizon_minutes:
+        if due is None:
             continue
-        if stop.get("kind") == "event" or stop.get("kind") == "school":
+        if stop.get("kind") == "event":
+            # ONE_OFF events take precedence over the remaining stops with no 90-minute
+            # window. Without a live ETA (this is the fallback policy) the event is
+            # pinned from a fixed 20-minute leave-by cutoff until it ends.
+            if now_minutes >= due - EVENT_FALLBACK_LEAVE_MIN:
+                urgent.append((due, stop))
+            continue
+        if due < now_minutes or due - now_minutes > deadline_horizon_minutes:
+            continue
+        if stop.get("kind") == "school":
             urgent.append((due, stop))
     if urgent:
         _, next_stop = min(urgent, key=lambda item: item[0])

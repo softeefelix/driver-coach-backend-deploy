@@ -92,6 +92,11 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
     for event in events:
         if str(event.get('status', '')).upper() in {'COMPLETED', 'CANCELLED', 'CANCELED'}:
             continue
+        # An event that has ENDED stops anchoring; one that has started but not ended
+        # stays pinned (Felix 2026-10-20). RECURRING visits ride along but never anchor.
+        end = minutes(event.get('endTime'))
+        if end is not None and now_minutes >= end:
+            continue
         event = dict(event)
         # Jobber id is authoritative. Older cached rows get a stable composite,
         # not title alone (two parties can have the same title).
@@ -108,9 +113,9 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
             row['end_time'] = source.get('endTime')
             row['window_start'] = source.get('startTime')
     for row in rows:
-        if row.get('kind') != 'event' and school_name(row.get('address')):
+        if row.get('kind') not in {'event', 'visit'} and school_name(row.get('address')):
             row['kind'] = 'school'
-    active = [r for r in rows if r.get('kind') == 'event' or
+    active = [r for r in rows if r.get('kind') in {'event', 'visit'} or
               r.get('stop_order') not in served_orders | skipped_orders]
     anchors = sorted([r for r in active if r.get('kind') in {'school', 'event'}],
                      key=lambda r: (minutes(r.get('arrive')) is None, minutes(r.get('arrive')) or 0))

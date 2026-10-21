@@ -48,6 +48,33 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import assignment, breaks, flagstate, geotab, jobber, liveness, no_idle, profiles, roster, routes
 from . import events as events_mod
+
+
+def _todays_bookings(driver_name: str):
+    """(ONE_OFF events, events + RECURRING visits for the advisor, feed status). Never raises."""
+    try:
+        evs, status = events_mod.get_today_events_with_status(driver_name)
+    except Exception:
+        evs, status = [], {"status": "unknown", "version": None}
+    try:
+        visits = events_mod.scheduled_visits_for_driver(driver_name)
+    except Exception:
+        visits = []
+    return evs, list(evs) + list(visits), status
+
+
+def _with_leave_by(evs: list, next_stop) -> list:
+    """Copy the live leave-by (ETA + buffer) onto the event it belongs to."""
+    ctx = (next_stop or {}).get("anchor_context") if isinstance(next_stop, dict) else None
+    if not isinstance(ctx, dict) or ctx.get("kind") != "event" or not ctx.get("leaveBy"):
+        return evs
+    out = []
+    for e in evs:
+        e = dict(e)
+        if e.get("title") == ctx.get("name") or e.get("address") == ctx.get("name"):
+            e["leaveBy"] = ctx["leaveBy"]
+        out.append(e)
+    return out
 from . import scorecard
 from . import school_slack
 from .config import flag_config, mapbox_token
@@ -159,10 +186,7 @@ def do_signin(req: SignInRequest, schema: str = DEFAULT_SCHEMA) -> dict:
     # try/except is belt-and-braces so the feed can NEVER crash sign-in. A crash here is a
     # failure -> [] (clear the panel per the contract), never None (which would omit the
     # key and leave a stale panel up).
-    try:
-        today_events = events_mod.get_today_events(square_name)
-    except Exception:
-        today_events = []
+    today_events, _advise_events, events_status = _todays_bookings(square_name)
 
     session_id = str(uuid.uuid4())
     with connect(schema=schema, autocommit=False) as conn:
@@ -191,6 +215,7 @@ def do_signin(req: SignInRequest, schema: str = DEFAULT_SCHEMA) -> dict:
                 route_cluster_id=proposed_route_id,
                 phase=phase,
                 events=today_events,
+                events_status=events_status,
             )
             # Operational assignment fields are byte-identical for both modes.  A later
             # friendly label belongs in assignment._candidate_objects, not this client seam.
@@ -246,22 +271,24 @@ def do_confirm_assignment(req: ConfirmAssignmentRequest, schema: str = DEFAULT_S
                 raise ValueError("route is unavailable for today")
             try:
                 driver_name = jobber.name_from_driver_id(driver_id) or ""
-                today_events = events_mod.get_today_events(driver_name)
             except Exception:
-                today_events = []
+                driver_name = ""
+            today_events, advise_events, events_status = _todays_bookings(driver_name)
             cur.execute(
                 "UPDATE driver_coach_session SET route_cluster_id=%s, plan_snapshot=%s::jsonb, "
                 "served_stop_orders='[]'::jsonb, skipped_stop_orders='[]'::jsonb WHERE session_id=%s",
                 (req.route_cluster_id, json.dumps(frozen_plan, default=str), req.session_id),
             )
             live = routes.resolve_live_route(cur, truck_no, route_cluster_id=req.route_cluster_id,
-                                             frozen_plan=frozen_plan, events=today_events,
+                                             frozen_plan=frozen_plan, events=advise_events,
                                              session_id=req.session_id, schema=schema, reset_chooser=True)
             payload = build_route_payload(
                 next_stop=live["next_stop"], route_cluster_id=live["route_cluster_id"],
                 phase=live["phase"], coached=bool(coached), shift_phase=live["shift_phase"],
                 route_count=live["route_count"], up_next=live.get("up_next"),
                 map_nav=live.get("map"), mapbox_token=mapbox_token() or None,
+                events=_with_leave_by(today_events, live.get("next_stop")),
+                events_status=events_status,
                 turns=live.get("turns"),
                 plan_source=live.get("plan_source"),
                 ticker=scorecard.live_ticker(jobber.name_from_driver_id(driver_id) or ""),
@@ -431,12 +458,12 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             driver_name_for_events = ""
             try:
                 driver_name_for_events = jobber.name_from_driver_id(driver_id) or ""
-                today_events = events_mod.get_today_events(driver_name_for_events)
             except Exception:
-                today_events = []
+                driver_name_for_events = ""
+            today_events, advise_events, events_status = _todays_bookings(driver_name_for_events)
             live = routes.resolve_live_route(
                 cur, truck_no, route_cluster_id=route_cluster_id, frozen_plan=frozen_plan,
-                served_orders=served_orders, skipped_orders=skipped_orders, events=today_events,
+                served_orders=served_orders, skipped_orders=skipped_orders, events=advise_events,
                 session_id=session_id, schema=schema,
             )
             # A deliberate Done/Skip is the normal advance path, but a truck that has
@@ -488,7 +515,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 )
                 live = routes.resolve_live_route(
                     cur, truck_no, route_cluster_id=route_cluster_id, frozen_plan=frozen_plan,
-                    served_orders=served_orders, skipped_orders=skipped_orders, events=today_events,
+                    served_orders=served_orders, skipped_orders=skipped_orders, events=advise_events,
                     session_id=session_id, schema=schema,
                 )
             position = live.get("position") if isinstance(live, dict) else None
@@ -546,7 +573,8 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 # PUBLIC (pk.) Mapbox token for the client's map — safe to expose.
                 mapbox_token=mapbox_token() or None,
                 # Today's ONE_OFF Jobber events (operational, both modes identical).
-                events=today_events,
+                events=_with_leave_by(today_events, live.get("next_stop")),
+                events_status=events_status,
                 turns=live.get("turns"),
                 plan_source=live.get("plan_source"),
                 ticker=scorecard.live_ticker(driver_name_for_events or ""),

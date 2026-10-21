@@ -816,7 +816,16 @@ def resolve_live_route(
     # remains intact. The driver sees the advised leg first, then the other remaining
     # plan entries — not a GPS-generated reroute.
     completed_orders = (served_orders or set()) | (skipped_orders or set())
-    active = [s for s in advice["plan"] if s.get("kind") == "event" or s.get("stop_order") not in completed_orders]
+    from .advisor import clock_minutes as _clock
+
+    def _booking_open(row: dict) -> bool:
+        end = _clock(row.get("end_time"))
+        return end is None or now < end
+
+    # Bookings (ONE_OFF events, RECURRING visits) stay listed until they END.
+    active = [s for s in advice["plan"]
+              if (_booking_open(s) if s.get("kind") in ("event", "visit")
+                  else s.get("stop_order") not in completed_orders)]
     def is_advised(row: dict) -> bool:
         if not stop:
             return False

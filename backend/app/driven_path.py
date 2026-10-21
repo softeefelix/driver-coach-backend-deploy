@@ -79,7 +79,7 @@ def fold_driven_points(logs) -> list[dict]:
 
 def _planned_rows(plan):
     for stop in plan or []:
-        if not isinstance(stop, dict) or stop.get("kind") == "event":
+        if not isinstance(stop, dict) or stop.get("kind") in ("event", "visit"):
             continue
         order, lat, lng = stop.get("stop_order"), stop.get("lat"), stop.get("lng")
         if isinstance(order, int) and isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
