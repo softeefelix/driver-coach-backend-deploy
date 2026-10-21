@@ -155,6 +155,14 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
     def clock_fallback(detail):
         # GPS/traffic outages must never suppress a due, unserved school.
         audit['fallback'] = detail
+        nonlocal first, due, name
+        if first.get('kind') != 'event':
+            for ev in (a for a in anchors if a.get('kind') == 'event'):
+                ev_due = minutes(ev.get('arrive'))
+                if ev_due is not None and now_minutes >= ev_due - 20:
+                    first, due = ev, ev_due
+                    name = first.get('title') or first.get('address') or 'Scheduled stop'
+                break
         if due is not None and (now_minutes >= due - 20 or
                                 previous.get('binding') == identity(first)):
             context = dict(name=name, due=fmt_clock_ampm(first.get('arrive')),
@@ -190,6 +198,17 @@ def choose(plan, *, served_orders, skipped_orders, events, now_minutes,
                 audit['legs'].append(dict(origin=identity(origin), target=identity(target), minutes=value))
             return cache[key]
 
+        # Events take precedence over the remaining route stops, schools included
+        # (Felix 2026-10-20): once a ONE_OFF event's live leave-by is reached, or it
+        # has started, it replaces an earlier school anchor (even a latched one).
+        if first.get('kind') != 'event':
+            for ev in (a for a in anchors if a.get('kind') == 'event'):
+                ev_due = minutes(ev.get('arrive'))
+                if now_minutes + leg(position, ev) + cfg.margin >= ev_due - cfg.buffer:
+                    first, due = ev, ev_due
+                    name = first.get('title') or first.get('address') or 'Scheduled stop'
+                    previous = dict(previous, binding=None)
+                break
         direct = leg(position, first)
         direct_context = dict(name=first.get('title') or first.get('address'),
             due=fmt_clock_ampm(first.get('arrive')), leaveBy=clock(due-cfg.buffer-cfg.margin-direct),

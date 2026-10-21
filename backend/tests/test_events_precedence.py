@@ -65,3 +65,19 @@ def test_live_chooser_recurring_visit_never_anchors():
     out = _choose(m(15, 58), [BINGO])
     assert out["next_stop"]["stop_order"] in (1, 2, 3)
     assert out["reason_code"] == "planned"
+
+
+SCHOOL_PLAN = PLAN + [{"stop_order": 4, "address": "Junipero Serra High School, San Mateo",
+                       "arrive": "14:20", "lat": 37.53, "lng": -122.33}]
+
+
+def test_due_event_beats_an_earlier_unserved_school_even_if_latched():
+    early = school_slack.choose(SCHOOL_PLAN, served_orders=set(), skipped_orders=set(), events=[SONY],
+                                now_minutes=m(14, 0), position={"lat": 37.5, "lng": -122.3},
+                                travel=lambda o, d: 10, previous={})
+    assert early["next_stop"]["kind"] == "school"
+    later = school_slack.choose(SCHOOL_PLAN, served_orders=set(), skipped_orders=set(), events=[SONY],
+                                now_minutes=m(17, 5), position={"lat": 37.5, "lng": -122.3},
+                                travel=lambda o, d: 10, previous={"binding": "stop:4"})
+    assert later["next_stop"]["kind"] == "event"
+    assert later["anchor_context"]["leaveBy"] == "5:00 PM"
