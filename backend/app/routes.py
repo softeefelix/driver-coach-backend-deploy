@@ -639,6 +639,7 @@ def resolve_live_route(
     schema: str = 'driver_coach',
     chooser_state: Optional[dict] = None,
     reset_chooser: bool = False,
+    driver_progress: Optional[dict] = None,
 ) -> dict:
     """Follow the truck along its ordered route and return its CURRENT state.
 
@@ -760,12 +761,24 @@ def resolve_live_route(
             advice['reason_code'] = 'eta_unavailable'
         if 'state' in advice:
             advice['state']['scope'] = scope
+        if driver_progress is not None:
+            from .driver_progress import merge_into_advice
+            merge_into_advice(advice, driver_progress)
         if session_id and 'audit' in advice:
             advice['audit_id'] = decision_store.append(cur, session_id, schema, advice)
         if chooser_state is not None and 'state' in advice:
             chooser_state.clear()
             chooser_state.update(advice['state'])
     stop = dict(advice["next_stop"]) if advice["next_stop"] else None
+    # An explicit Jump, Back, or Start Over pins the cab cursor. It does not
+    # rewrite the chooser's school latch and it does not mark other stops.
+    driver_pinned = False
+    if isinstance(driver_progress, dict):
+        from .driver_progress import plan_stop
+        pinned = plan_stop(frozen_plan if frozen_plan is not None else stops, driver_progress.get("targetOrder"))
+        if pinned is not None:
+            stop = dict(pinned)
+            driver_pinned = True
     parked_stop = None
     if position and driven_stops:
         try:
@@ -793,9 +806,9 @@ def resolve_live_route(
         _grade_stop(cur, stop, route_id, dow)
         _attach_live_eta(cur, stop, truck_no, position=position)
     if stop is not None:
-        stop["advice_reason"] = advice["reason"]
+        stop["advice_reason"] = "Selected stop" if driver_pinned else advice["reason"]
         if use_chooser:
-            stop['reason_code'] = advice.get('reason_code')
+            stop['reason_code'] = "driver_target" if driver_pinned else advice.get('reason_code')
             stop['anchor'] = stop.get('kind') in {'school', 'event'}
             stop['due'] = stop.get('arrive') if stop['anchor'] else None
             stop['decision_audit_id'] = advice.get('audit_id')

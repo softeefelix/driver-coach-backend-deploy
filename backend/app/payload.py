@@ -281,6 +281,43 @@ def build_next_stop(
     return ns
 
 
+def build_plan_stops(plan, served_orders, skipped_orders) -> list:
+    """Full frozen-plan pins in snapshot order, including completed ones.
+
+    ``sessionState`` mirrors the stored columns. It does not say the driver
+    confirmed that row; callers keep ``legacyProvenanceUnknown`` for that.
+    """
+    served = set(served_orders or ())
+    skipped = set(skipped_orders or ())
+    pins = []
+    for stop in plan or []:
+        if not isinstance(stop, dict):
+            continue
+        order = stop.get("stop_order")
+        if isinstance(order, bool) or not isinstance(order, int):
+            continue
+        if order in served:
+            state = "served"
+        elif order in skipped:
+            state = "skipped"
+        else:
+            state = "open"
+        row = {
+            "order": order,
+            "name": friendly_stop_name(stop.get("address")) or stop.get("title") or "Stop",
+            "sessionState": state,
+        }
+        lat, lng = stop.get("lat"), stop.get("lng")
+        if (
+            isinstance(lat, (int, float)) and not isinstance(lat, bool)
+            and isinstance(lng, (int, float)) and not isinstance(lng, bool)
+        ):
+            row["lat"] = float(lat)
+            row["lng"] = float(lng)
+        pins.append(row)
+    return pins
+
+
 def assert_disguise_safe(payload: dict) -> bool:
     """Server-side mirror of session.js assertDisguiseSafe. Raises on any leak.
 
@@ -412,6 +449,12 @@ def build_route_payload(
     nudge: object = _OMIT,
     break_state: object = _OMIT,
     plan_source: Optional[str] = None,
+    session_outcomes: Optional[dict] = None,
+    remaining_stop_orders: Optional[list] = None,
+    geotab_adherence: Optional[dict] = None,
+    plan_stops: Optional[list] = None,
+    progress_revision: Optional[int] = None,
+    driver_target: object = _OMIT,
 ) -> dict:
     """The disguise-safe body for GET /driver-coach/v1/route (the live poll).
 
@@ -444,6 +487,41 @@ def build_route_payload(
                              when the caller did not evaluate it.
       - break                lunch/break state for this shift, including remaining
                              seconds. Omitted only when the caller did not evaluate it.
+      - route.remainingStopOrders
+                             unfinished frozen-plan orders in master snapshot order.
+                             Present on the live poll. Confirmed Done/Skip orders are
+                             the only ones removed. Geotab proximity does not remove
+                             an earlier stop. Omitted when the caller did not evaluate
+                             outcomes (older payload builders).
+      - route.sessionOutcomes
+                             {source:"session", legacyProvenanceUnknown:true,
+                             servedStopOrders, skippedStopOrders}. These are the stored
+                             session columns. Explicit Done/Skip writes them, and so did
+                             older Geotab inference. The poll does not rewrite history
+                             and does not claim each order was driver-confirmed.
+                             legacyProvenanceUnknown stays true for that reason.
+                             Omitted when the caller did not evaluate the columns.
+      - route.stops          every frozen-plan pin in uploaded snapshot order, including
+                             stops the remaining map window hides. Identity is
+                             `order`. `sessionState` is open|served|skipped from the
+                             stored columns and is not a claim the driver confirmed
+                             that row. lat/lng match the map pin when the snapshot
+                             has coordinates. Present on the live poll and on
+                             assignment confirm. Omitted by older builders.
+      - route.progressRevision
+                             compare-and-swap counter for Start Over and set-target.
+                             A route poll does not increment it.
+      - route.driverTarget   {stopOrder, source:"driver"} when the driver has an
+                             explicit current pin, or null when the chooser is the
+                             cursor. Source driver applies only to this explicit
+                             target, never to the outcome arrays.
+      - geotabAdherence      read-only office estimate from Geotab gear-126 Park and
+                             pass-by. authoritative and affectsCursor are false. It is
+                             not a stop outcome, is not stored, and must not be posted
+                             back onto the cab session. Malformed or missing telemetry
+                             yields empty arrays rather than failing the poll. Truck
+                             location itself stays on map.truck / map.driven /
+                             map.drivenStops. Omitted when the caller did not evaluate it.
 
     A NOMINAL session's poll has no `coach` key — identical disguise contract as
     build_session_payload. assert_disguise_safe re-checks the top-level forbidden set
@@ -464,6 +542,23 @@ def build_route_payload(
         },
         "phase": phase,
     }
+    # Additive cab-poll metadata. Absent on older builders so sign-in and refuel
+    # snapshots keep their previous shape. iOS ignores unknown keys.
+    if remaining_stop_orders is not None:
+        payload["route"]["remainingStopOrders"] = list(remaining_stop_orders)
+    if session_outcomes is not None:
+        payload["route"]["sessionOutcomes"] = session_outcomes
+    if plan_stops is not None:
+        payload["route"]["stops"] = plan_stops
+    if progress_revision is not None:
+        payload["route"]["progressRevision"] = progress_revision
+    if driver_target is not _OMIT:
+        if isinstance(driver_target, int) and not isinstance(driver_target, bool):
+            payload["route"]["driverTarget"] = {"stopOrder": driver_target, "source": "driver"}
+        else:
+            payload["route"]["driverTarget"] = None
+    if geotab_adherence is not None:
+        payload["geotabAdherence"] = geotab_adherence
     # The existing iPad banner channel consumes this exact seam shape. The refuel
     # policy creates a Reminder only; this boundary serializes it and never sends mail.
     if refuel_reminder is not None:
