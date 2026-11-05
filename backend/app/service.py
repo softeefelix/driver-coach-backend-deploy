@@ -26,7 +26,8 @@ trucks + recent route signal). READ-ONLY.
 
 route: the live snapshot for a session_id — current nextStop, LIVE Geotab motion
 phase, §11 shiftPhase, routeCount, and (disguise-safe, coached-only) the next-stop
-grade. READ-ONLY.
+grade. Confirmed Done/Skip orders are read-only on this poll. Geotab supplies truck
+tracking and a separate non-authoritative adherence estimate; it does not write them.
 
 HARD CONSTRAINT (Felix gate): this targets DRIVER_COACH_SCHEMA (default
 'driver_coach'), NEVER public. It is BUILD + TEST ONLY — not deployed, the live
@@ -80,7 +81,16 @@ from . import school_slack
 from .config import flag_config, mapbox_token
 from .db import DEFAULT_SCHEMA, connect
 from .motion import phase_for_fix
-from .payload import build_route_payload, build_session_payload, friendly_stop_name
+from .driver_progress import (
+    ProgressConflict,
+    bump,
+    empty_progress,
+    first_stop_order,
+    from_state,
+    plan_stop,
+    require_revision,
+)
+from .payload import build_plan_stops, build_route_payload, build_session_payload, friendly_stop_name
 from .refcore import DRIVING
 from .refuel import RefuelNightBook, Reminder
 
@@ -108,10 +118,29 @@ class ConfirmAssignmentRequest(BaseModel):
 
 
 class StopOutcomeRequest(BaseModel):
-    """A deliberate driver outcome. Only the current frozen-plan stop may change."""
+    """A deliberate driver outcome. Only the current frozen-plan stop may change.
+
+    ``expected_revision`` is optional so an older cab can still post Done/Skip.
+    When it is present it must match ``route.progressRevision`` or the write is
+    refused and nothing is stored.
+    """
     session_id: str
     stop_order: int
     outcome: str
+    expected_revision: Optional[int] = None
+
+
+class StartOverRequest(BaseModel):
+    """Explicit driver tap. Clears stored outcomes and aims at the first uploaded pin."""
+    session_id: str
+    expected_revision: int
+
+
+class SetTargetRequest(BaseModel):
+    """Explicit Jump or Back. Selects one uploaded pin and does not complete any other."""
+    session_id: str
+    stop_order: int
+    expected_revision: int
 
 
 class Heartbeat(BaseModel):
@@ -279,9 +308,13 @@ def do_confirm_assignment(req: ConfirmAssignmentRequest, schema: str = DEFAULT_S
                 "served_stop_orders='[]'::jsonb, skipped_stop_orders='[]'::jsonb WHERE session_id=%s",
                 (req.route_cluster_id, json.dumps(frozen_plan, default=str), req.session_id),
             )
-            live = routes.resolve_live_route(cur, truck_no, route_cluster_id=req.route_cluster_id,
-                                             frozen_plan=frozen_plan, events=advise_events,
-                                             session_id=req.session_id, schema=schema, reset_chooser=True)
+            fresh = empty_progress()
+            live = routes.resolve_live_route(
+                cur, truck_no, route_cluster_id=req.route_cluster_id,
+                frozen_plan=frozen_plan, events=advise_events,
+                session_id=req.session_id, schema=schema, reset_chooser=True,
+                driver_progress=fresh,
+            )
             payload = build_route_payload(
                 next_stop=live["next_stop"], route_cluster_id=live["route_cluster_id"],
                 phase=live["phase"], coached=bool(coached), shift_phase=live["shift_phase"],
@@ -292,43 +325,123 @@ def do_confirm_assignment(req: ConfirmAssignmentRequest, schema: str = DEFAULT_S
                 turns=live.get("turns"),
                 plan_source=live.get("plan_source"),
                 ticker=scorecard.live_ticker(jobber.name_from_driver_id(driver_id) or ""),
+                **_cursor_payload(frozen_plan, set(), set(), fresh),
             )
         conn.commit()
     return {"session_id": req.session_id, **payload}
 
 
+def _orders(raw) -> set[int]:
+    values = raw if isinstance(raw, list) else json.loads(raw or "[]")
+    return {
+        int(v) for v in values
+        if isinstance(v, int) and not isinstance(v, bool)
+    }
+
+
+def _plan_rows(raw) -> list:
+    return raw if isinstance(raw, list) else json.loads(raw or "[]")
+
+
+def _advised_order(plan, served, skipped, state) -> Optional[int]:
+    """Chooser current stop. A school/event latch still wins when the driver has no target."""
+    from .advisor import advise_plan
+    current = advise_plan(
+        plan, served_orders=served, skipped_orders=skipped,
+        now_minutes=datetime.datetime.now().hour * 60 + datetime.datetime.now().minute,
+    )["next_stop"]
+    if school_slack.enabled() and isinstance(state, dict):
+        latched = next((
+            s for s in plan
+            if isinstance(s, dict) and school_slack.identity(s) == state.get("choice")
+            and s.get("stop_order") not in served | skipped
+        ), None)
+        if latched is not None:
+            current = latched
+        elif state.get("choice"):
+            current = None
+    if not isinstance(current, dict):
+        return None
+    order = current.get("stop_order")
+    if isinstance(order, bool) or not isinstance(order, int):
+        return None
+    return order
+
+
+def _current_outcome_order(plan, served, skipped, state, progress) -> Optional[int]:
+    """The only stop Done/Skip may write.
+
+    An explicit driver target is that stop. Otherwise the advised/latched stop
+    is, which keeps the school-before-filler rule when the driver has not jumped.
+    """
+    target = progress.get("targetOrder") if isinstance(progress, dict) else None
+    if plan_stop(plan, target) is not None:
+        return target
+    return _advised_order(plan, served, skipped, state)
+
+
 def do_stop_outcome(req: StopOutcomeRequest, schema: str = DEFAULT_SCHEMA) -> dict:
-    """Persist a driver-confirmed Done/Skip outcome without altering the frozen plan."""
+    """Persist a deliberate Done/Skip of the current stop. The plan snapshot stays.
+
+    The route poll, office estimate, Jump, and Back do not call this. Jump and
+    Back use set-target, which does not mark the stops in between.
+    """
     if req.outcome not in {"done", "skip"}:
         raise ValueError("outcome must be done or skip")
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT plan_snapshot, served_stop_orders, skipped_stop_orders FROM driver_coach_session WHERE session_id=%s FOR UPDATE", (req.session_id,))
+            cur.execute(
+                "SELECT plan_snapshot, served_stop_orders, skipped_stop_orders "
+                "FROM driver_coach_session WHERE session_id=%s FOR UPDATE",
+                (req.session_id,),
+            )
             row = cur.fetchone()
             if row is None:
                 raise KeyError(f"unknown session_id: {req.session_id}")
             plan_raw, served_raw, skipped_raw = row
-            plan = plan_raw if isinstance(plan_raw, list) else json.loads(plan_raw or "[]")
-            served = {int(v) for v in (served_raw if isinstance(served_raw, list) else json.loads(served_raw or "[]"))}
-            skipped = {int(v) for v in (skipped_raw if isinstance(skipped_raw, list) else json.loads(skipped_raw or "[]"))}
-            from .advisor import advise_plan
-            current = advise_plan(plan, served_orders=served, skipped_orders=skipped,
-                                  now_minutes=datetime.datetime.now().hour * 60 + datetime.datetime.now().minute)["next_stop"]
-            if school_slack.enabled():
-                from .decision_store import load
-                state = load(cur, req.session_id, schema)
-                current = next((s for s in plan if school_slack.identity(s) == state.get('choice')
-                                and s.get('stop_order') not in served | skipped), None)
-            if not current or current.get("stop_order") != req.stop_order:
+            plan = _plan_rows(plan_raw)
+            served = _orders(served_raw)
+            skipped = _orders(skipped_raw)
+            from .decision_store import append, load
+            state = load(cur, req.session_id, schema)
+            progress = from_state(state)
+            if req.expected_revision is not None:
+                require_revision(progress, req.expected_revision)
+            current_order = _current_outcome_order(plan, served, skipped, state, progress)
+            if current_order is None or req.stop_order != current_order:
                 raise ValueError("outcome must target the advised current planned stop")
-            (served if req.outcome == "done" else skipped).add(req.stop_order)
-            cur.execute("UPDATE driver_coach_session SET served_stop_orders=%s::jsonb, skipped_stop_orders=%s::jsonb WHERE session_id=%s",
-                        (json.dumps(sorted(served)), json.dumps(sorted(skipped)), req.session_id))
+            if req.outcome == "done":
+                served.add(req.stop_order)
+                skipped.discard(req.stop_order)
+            else:
+                skipped.add(req.stop_order)
+                served.discard(req.stop_order)
+            cur.execute(
+                "UPDATE driver_coach_session SET served_stop_orders=%s::jsonb, "
+                "skipped_stop_orders=%s::jsonb WHERE session_id=%s",
+                (json.dumps(sorted(served)), json.dumps(sorted(skipped)), req.session_id),
+            )
+            target = progress.get("targetOrder")
+            if target == req.stop_order:
+                target = None
+            stored = dict(state) if isinstance(state, dict) else {}
+            stored["driverProgress"] = bump(progress, target)
+            append(cur, req.session_id, schema, {
+                "audit": {"kind": "stop-outcome", "stopOrder": req.stop_order, "outcome": req.outcome},
+                "state": stored,
+            })
         conn.commit()
-    return {"session_id": req.session_id, "outcome": req.outcome, "stop_order": req.stop_order}
+    return {
+        "session_id": req.session_id,
+        "outcome": req.outcome,
+        "stop_order": req.stop_order,
+        "progressRevision": stored["driverProgress"]["revision"],
+    }
 
 
 def do_heartbeat(req: HeartbeatRequest, schema: str = DEFAULT_SCHEMA) -> dict:
+    # iPad GPS in the batch is liveness evidence only. Route progress reads Geotab
+    # for the truck and never this payload, so an office iPad cannot move the cab.
     batch = [hb.model_dump() for hb in req.batch]
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
@@ -417,15 +530,217 @@ def do_end_break(req: BreakEndRequest, schema: str = DEFAULT_SCHEMA) -> dict:
             raise
 
 
-def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
-    """The live route state for a session (the ~15-20s poll). READ-ONLY.
+def session_outcome_snapshot(served_orders, skipped_orders) -> dict:
+    """The session's stored stop-order arrays, without inventing who wrote each one.
 
-    Looks up the session's truck + coached flag (driver_coach_session), follows the
-    truck along its ordered route from the live Geotab position, and ships the
-    disguise-safe current state: route.nextStop, live motion phase, §11 shiftPhase,
-    routeCount and — coached only, inside the coach bundle — the updated grade.
+    Explicit Done/Skip and any older Geotab inference share these columns. This
+    poll does not rewrite them and cannot tell those rows apart, so the snapshot
+    is source ``session`` with ``legacyProvenanceUnknown`` true. It is not a
+    claim that every listed order was driver-confirmed.
     """
-    auto_advanced = False
+    return {
+        "source": "session",
+        "legacyProvenanceUnknown": True,
+        "servedStopOrders": sorted(served_orders or ()),
+        "skippedStopOrders": sorted(skipped_orders or ()),
+    }
+
+
+def remaining_master_orders(plan, served_orders, skipped_orders) -> list[int]:
+    """Unfinished frozen-plan orders in snapshot order.
+
+    Orders present in the stored served or skipped columns are removed. Those
+    columns are not proof of a driver confirmation. Proximity is not an input.
+    """
+    done = set(served_orders or ()) | set(skipped_orders or ())
+    orders = []
+    seen = set()
+    for stop in plan or []:
+        if not isinstance(stop, dict):
+            continue
+        order = stop.get("stop_order")
+        if isinstance(order, int) and order not in done and order not in seen:
+            seen.add(order)
+            orders.append(order)
+    return orders
+
+
+def _cursor_payload(plan, served, skipped, progress) -> dict:
+    return {
+        "session_outcomes": session_outcome_snapshot(served, skipped),
+        "remaining_stop_orders": remaining_master_orders(plan, served, skipped),
+        "plan_stops": build_plan_stops(plan, served, skipped),
+        "progress_revision": progress["revision"],
+        "driver_target": progress.get("targetOrder"),
+    }
+
+
+def _conflict_body(exc: ProgressConflict) -> dict:
+    target = exc.target_order
+    return {
+        "error": "progress_revision_conflict",
+        "progressRevision": exc.revision,
+        "driverTarget": (
+            {"stopOrder": target, "source": "driver"}
+            if isinstance(target, int) and not isinstance(target, bool) else None
+        ),
+    }
+
+
+def _apply_target(live, plan, progress):
+    """Show the explicit driver pin without dropping the other uploaded pins."""
+    if not isinstance(live, dict) or not isinstance(progress, dict):
+        return live
+    pinned = plan_stop(plan, progress.get("targetOrder"))
+    if pinned is None:
+        return live
+    live = dict(live)
+    live["next_stop"] = dict(pinned)
+    nav = live.get("map")
+    if isinstance(nav, dict) and isinstance(nav.get("stops"), list):
+        order = pinned.get("stop_order")
+        rest = [stop for stop in nav["stops"] if not isinstance(stop, dict) or stop.get("order") != order]
+        pin = {"order": order, "name": pinned.get("address") or "Stop"}
+        lat, lng = pinned.get("lat"), pinned.get("lng")
+        if (
+            isinstance(lat, (int, float)) and not isinstance(lat, bool)
+            and isinstance(lng, (int, float)) and not isinstance(lng, bool)
+        ):
+            pin["lat"] = float(lat)
+            pin["lng"] = float(lng)
+        nav = dict(nav)
+        nav["stops"] = [pin] + rest
+        live["map"] = nav
+    return live
+
+
+def _cursor_response(
+    cur, schema, *, session_id, truck_no, coached, route_cluster_id, driver_id,
+    plan, served, skipped, progress,
+) -> dict:
+    """Poll-shaped body after an explicit cursor change. Does not write outcomes."""
+    driver_name = ""
+    try:
+        driver_name = jobber.name_from_driver_id(driver_id) or ""
+    except Exception:
+        driver_name = ""
+    today_events, advise_events, events_status = _todays_bookings(driver_name)
+    live = routes.resolve_live_route(
+        cur, truck_no, route_cluster_id=route_cluster_id, frozen_plan=plan,
+        served_orders=served, skipped_orders=skipped, events=advise_events,
+        session_id=session_id, schema=schema, driver_progress=progress,
+    )
+    live = _apply_target(live, plan, progress)
+    from .adherence import adherence_estimate, empty_adherence
+    nav = live.get("map") if isinstance(live.get("map"), dict) else {}
+    truck = nav.get("truck") if isinstance(nav.get("truck"), dict) else {}
+    fix = live.get("position") if isinstance(live.get("position"), dict) else {}
+    try:
+        adherence = adherence_estimate(
+            plan, live.get("driven_stops"),
+            now_lat=truck.get("lat", fix.get("lat")), now_lng=truck.get("lng", fix.get("lng")),
+        )
+    except Exception:
+        adherence = empty_adherence()
+    payload = build_route_payload(
+        next_stop=live["next_stop"], route_cluster_id=live["route_cluster_id"],
+        phase=live["phase"], coached=bool(coached), shift_phase=live["shift_phase"],
+        route_count=live["route_count"], up_next=live.get("up_next"),
+        map_nav=live.get("map"), mapbox_token=mapbox_token() or None,
+        events=_with_leave_by(today_events, live.get("next_stop")),
+        events_status=events_status, turns=live.get("turns"),
+        plan_source=live.get("plan_source"),
+        ticker=scorecard.live_ticker(driver_name or ""),
+        refuel_reminder=refuel_reminder_for_route_poll(truck_no),
+        geotab_adherence=adherence,
+        **_cursor_payload(plan, served, skipped, progress),
+    )
+    return {"session_id": session_id, **payload}
+
+
+def _lock_cursor(cur, session_id):
+    cur.execute(
+        "SELECT truck_no, coached, route_cluster_id, driver_id, plan_snapshot, "
+        "served_stop_orders, skipped_stop_orders FROM driver_coach_session "
+        "WHERE session_id = %s FOR UPDATE",
+        (session_id,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise KeyError(f"unknown session_id: {session_id}")
+    truck_no, coached, route_cluster_id, driver_id, plan_raw, served_raw, skipped_raw = row
+    if route_cluster_id is None:
+        raise ValueError("route confirmation required")
+    plan = _plan_rows(plan_raw)
+    if not plan:
+        raise ValueError("confirmed plan is empty")
+    return truck_no, coached, route_cluster_id, driver_id, plan, _orders(served_raw), _orders(skipped_raw)
+
+
+def do_start_over(req: StartOverRequest, schema: str = DEFAULT_SCHEMA) -> dict:
+    """Clear stored outcomes and aim at the first uploaded pin.
+
+    The frozen plan_snapshot is not read again and is not replaced. The school
+    chooser latch is left in place. A stale expected_revision does not clear
+    outcomes written after the client's last poll. Office reads must not call this.
+    """
+    with connect(schema=schema, autocommit=False) as conn:
+        with conn.cursor() as cur:
+            truck_no, coached, route_cluster_id, driver_id, plan, served, skipped = _lock_cursor(cur, req.session_id)
+            from .decision_store import load
+            progress = from_state(load(cur, req.session_id, schema))
+            require_revision(progress, req.expected_revision)
+            target = first_stop_order(plan)
+            if target is None:
+                raise ValueError("confirmed plan has no stops")
+            cur.execute(
+                "UPDATE driver_coach_session SET served_stop_orders='[]'::jsonb, "
+                "skipped_stop_orders='[]'::jsonb WHERE session_id=%s",
+                (req.session_id,),
+            )
+            progress = bump(progress, target)
+            body = _cursor_response(
+                cur, schema, session_id=req.session_id, truck_no=truck_no, coached=coached,
+                route_cluster_id=route_cluster_id, driver_id=driver_id, plan=plan,
+                served=set(), skipped=set(), progress=progress,
+            )
+        conn.commit()
+    return body
+
+
+def do_set_target(req: SetTargetRequest, schema: str = DEFAULT_SCHEMA) -> dict:
+    """Point the cab at one uploaded pin. No other stop is marked done or skipped."""
+    with connect(schema=schema, autocommit=False) as conn:
+        with conn.cursor() as cur:
+            truck_no, coached, route_cluster_id, driver_id, plan, served, skipped = _lock_cursor(cur, req.session_id)
+            if plan_stop(plan, req.stop_order) is None:
+                raise ValueError("target must be a stop on the confirmed plan")
+            from .decision_store import load
+            progress = from_state(load(cur, req.session_id, schema))
+            require_revision(progress, req.expected_revision)
+            progress = bump(progress, req.stop_order)
+            body = _cursor_response(
+                cur, schema, session_id=req.session_id, truck_no=truck_no, coached=coached,
+                route_cluster_id=route_cluster_id, driver_id=driver_id, plan=plan,
+                served=served, skipped=skipped, progress=progress,
+            )
+        conn.commit()
+    return body
+
+
+def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
+    """The live route state for a session (the ~15-20s poll).
+
+    Looks up the session's truck + coached flag (driver_coach_session) and ships the
+    disguise-safe current state: route.nextStop from confirmed outcomes only, live
+    Geotab motion phase, §11 shiftPhase, routeCount and — coached only, inside the
+    coach bundle — the updated grade.
+
+    This poll does not write served_stop_orders or skipped_stop_orders. A credible
+    parked completion is an explicit stop-outcome from the cab app, same as Done/Skip.
+    Geotab still places the truck and is copied into geotabAdherence for a later
+    read-only office view; that object does not move the cab cursor.
+    """
     wrote_shift = False
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
@@ -461,63 +776,38 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             except Exception:
                 driver_name_for_events = ""
             today_events, advise_events, events_status = _todays_bookings(driver_name_for_events)
+            from .decision_store import load as load_progress
+            # A database that has not applied the chooser table still serves the
+            # route. There is no explicit driver target to restore.
+            cur.execute("SAVEPOINT driver_progress_load")
+            try:
+                progress = from_state(load_progress(cur, session_id, schema))
+                cur.execute("RELEASE SAVEPOINT driver_progress_load")
+            except psycopg2.errors.UndefinedTable:
+                cur.execute("ROLLBACK TO SAVEPOINT driver_progress_load")
+                progress = empty_progress()
             live = routes.resolve_live_route(
                 cur, truck_no, route_cluster_id=route_cluster_id, frozen_plan=frozen_plan,
                 served_orders=served_orders, skipped_orders=skipped_orders, events=advise_events,
-                session_id=session_id, schema=schema,
+                session_id=session_id, schema=schema, driver_progress=progress,
             )
-            # A deliberate Done/Skip is the normal advance path, but a truck that has
-            # actually dwelled at the advised frozen-plan pin must advance too. The
-            # route resolver's parked phase is produced from Geotab's stop geofence +
-            # settle dwell state; it is not a nearest-later-stop shortcut. Persist it
-            # before rebuilding the snapshot so the next poll cannot resurrect it.
-            arrived = live.get("next_stop") or {}
-            arrived_order = arrived.get("stop_order")
-            if (live.get("phase") == "parked" and isinstance(arrived_order, int)
-                    and (not school_slack.enabled() or
-                         ((live.get('parked_stop') or {}).get('stop_order') == arrived_order
-                          and arrived.get('kind') not in {'school', 'event'}))
-                    and arrived_order not in served_orders and arrived_order not in skipped_orders):
-                served_orders.add(arrived_order)
-                auto_advanced = True
-            # Transmission Park at a planned pin, then leaving it, is the stop.
-            # The speed-based phase above almost never fires: each poll is one
-            # sample with no dwell history. Gear 126 is the same signal Geotab uses.
-            truck = (live.get("map") or {}).get("truck") or {}
-            if truck.get("lat") is not None and live.get("driven_stops"):
-                from .driven_path import park_served_orders, passed_orders
-                plan_rows = live.get("match_plan") or frozen_plan
-                for order in park_served_orders(
-                    plan_rows, live["driven_stops"],
-                    now_lat=truck["lat"], now_lng=truck["lng"],
-                ):
-                    if school_slack.enabled() and any(s.get('stop_order') == order and
-                            (s.get('kind') in {'school', 'event'} or school_slack.school_name(s.get('address')))
-                            for s in plan_rows):
-                        continue  # Early Park must not complete a timed anchor.
-                    if order not in served_orders and order not in skipped_orders:
-                        served_orders.add(order)
-                        auto_advanced = True
-                # Do not send the driver back to an earlier pin they have already
-                # driven past. The list stays the list. West 39th stays on the plan;
-                # it stops being Next once the truck is at a later pin.
-                for order in passed_orders(plan_rows, now_lat=truck["lat"], now_lng=truck["lng"]):
-                    if school_slack.enabled():
-                        continue  # Later filler must not auto-skip earlier anchors.
-                    if order not in served_orders and order not in skipped_orders:
-                        skipped_orders.add(order)
-                        auto_advanced = True
-            if auto_advanced:
-                cur.execute(
-                    "UPDATE driver_coach_session SET served_stop_orders=%s::jsonb, "
-                    "skipped_stop_orders=%s::jsonb WHERE session_id=%s",
-                    (json.dumps(sorted(served_orders)), json.dumps(sorted(skipped_orders)), session_id),
+            live = _apply_target(live, frozen_plan, progress)
+            # Geotab still tracks the truck. Park phase, gear-126 history, and a
+            # pass-by near a later pin are an office estimate only — never folded
+            # into served/skipped, and never used to rebuild the cab cursor.
+            from .adherence import adherence_estimate, empty_adherence
+            nav = live.get("map") if isinstance(live.get("map"), dict) else {}
+            truck = nav.get("truck") if isinstance(nav.get("truck"), dict) else {}
+            fix = live.get("position") if isinstance(live.get("position"), dict) else {}
+            try:
+                adherence = adherence_estimate(
+                    frozen_plan,
+                    live.get("driven_stops"),
+                    now_lat=truck.get("lat", fix.get("lat")),
+                    now_lng=truck.get("lng", fix.get("lng")),
                 )
-                live = routes.resolve_live_route(
-                    cur, truck_no, route_cluster_id=route_cluster_id, frozen_plan=frozen_plan,
-                    served_orders=served_orders, skipped_orders=skipped_orders, events=advise_events,
-                    session_id=session_id, schema=schema,
-                )
+            except Exception:
+                adherence = empty_adherence()
             position = live.get("position") if isinstance(live, dict) else None
             plan = live.get("match_plan") if isinstance(live, dict) else None
             if not plan:
@@ -581,10 +871,12 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 refuel_reminder=refuel_reminder_for_route_poll(truck_no),
                 nudge=nudge,
                 break_state=break_state,
+                geotab_adherence=adherence,
+                **_cursor_payload(frozen_plan, served_orders, skipped_orders, progress),
             )
-        # The normal poll is read-only. A confirmed physical dwell, or a no-idle /
-        # break transition, is persisted. School-slack audits commit on the same path.
-        if auto_advanced or school_slack.enabled() or wrote_shift:
+        # Confirmed stop outcomes are not written here. A no-idle/break transition
+        # or school-slack decision audit may still commit; those are not outcomes.
+        if school_slack.enabled() or wrote_shift:
             conn.commit()
         else:
             conn.rollback()
@@ -628,6 +920,32 @@ def stop_outcome(req: StopOutcomeRequest) -> dict:
         return do_stop_outcome(req)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ProgressConflict as e:
+        raise HTTPException(status_code=409, detail=_conflict_body(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/driver-coach/v1/route/start-over")
+def start_over(req: StartOverRequest) -> dict:
+    try:
+        return do_start_over(req)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ProgressConflict as e:
+        raise HTTPException(status_code=409, detail=_conflict_body(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/driver-coach/v1/route/target")
+def set_target(req: SetTargetRequest) -> dict:
+    try:
+        return do_set_target(req)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ProgressConflict as e:
+        raise HTTPException(status_code=409, detail=_conflict_body(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
