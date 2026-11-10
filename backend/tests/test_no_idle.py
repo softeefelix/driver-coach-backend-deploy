@@ -54,7 +54,7 @@ def test_thresholds_pin_the_owners_rule():
     assert raw["breaks"]["break_duration_s"] == 1800
     assert raw["breaks"]["lunch_allowance"] == 1
     assert raw["breaks"]["break_allowance"] == 1
-    assert raw["square_offline"]["max_s"] == 3600
+    assert "square_offline" not in raw
     assert no_idle_settings()["no_sale_move_on_s"] == 90
     assert break_settings()["lunch_allowance"] == 1
     assert allowance(break_settings(), "break") == 1
@@ -227,7 +227,20 @@ def test_break_end_rules_and_overrun_grace():
     assert state["used"] == 1 and state["allowed"] == 1
 
 
-def test_square_sale_matches_the_driver_or_the_truck_and_not_a_longer_number():
+def test_square_access_token_env_beats_the_file(monkeypatch, tmp_path):
+    from app import scorecard
+
+    path = tmp_path / "softeedashboard.env"
+    path.write_text('SQUARE_TOKEN="file-token"\n')
+    monkeypatch.setenv("SQUARE_ACCESS_TOKEN", "env-token")
+    assert scorecard._square_token(str(path)) == "env-token"
+    monkeypatch.setenv("SQUARE_ACCESS_TOKEN", "   ")
+    assert scorecard._square_token(str(path)) == "file-token"
+    monkeypatch.delenv("SQUARE_ACCESS_TOKEN", raising=False)
+    assert scorecard._square_token(str(path)) == "file-token"
+
+
+def test_square_sale_matches_the_driver_or_the_truck_and_not_a_longer_number(monkeypatch):
     team = {"tm-1": "Amina Cole"}
     def payment(when, **extra):
         body = {
@@ -259,16 +272,24 @@ def test_square_sale_matches_the_driver_or_the_truck_and_not_a_longer_number():
             payment("2026-10-15T17:51:00Z", team_member_id="other", device_details={"device_name": "T17"}),
         ],
     )
-    assert other_truck == {"known": False, "last_sale_at": None}
+    assert other_truck["known"] is False
+    assert other_truck["last_sale_at"] is None
+    assert other_truck["reason"] == "no_match"
 
     none_today = last_truck_sale(
         truck_no=7, driver_name="Amina Cole", now=T0, team=team, payments=[],
     )
-    assert none_today == {"known": True, "last_sale_at": None}
+    assert none_today == {"known": True, "last_sale_at": None, "reason": "no_sale"}
     # No token in this environment: the live lookup must not invent a sale.
     from app.scorecard import clear_sale_cache
     clear_sale_cache()
-    assert last_truck_sale(truck_no=7, driver_name="Amina Cole", now=T0)["known"] is False
+    monkeypatch.delenv("SQUARE_ACCESS_TOKEN", raising=False)
+    missing = last_truck_sale(truck_no=7, driver_name="Amina Cole", now=T0)
+    assert missing["known"] is False and missing["reason"] == "no_token"
+    assert service._last_sale_wire(sale)["at"].endswith("Z")
+    assert service._last_sale_wire(sale)["reason"] is None
+    assert service._last_sale_wire(missing) == {"at": None, "reason": "no_token"}
+    assert service._last_sale_wire(none_today) == {"at": None, "reason": "no_sale"}
 
 
 def test_poll_payload_carries_nudge_and_break_without_clobbering_refuel():

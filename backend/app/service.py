@@ -494,6 +494,22 @@ def refuel_reminder_for_route_poll(
     return reminders[0] if reminders else None
 
 
+def _last_sale_wire(found: Optional[dict]) -> dict:
+    """Cab-facing last Square sale. No idle-minute score.
+
+    ``at`` is the sale time, or null. ``reason`` is null when ``at`` is set.
+    Otherwise it is ``no_token``, ``no_match``, ``no_sale``, or ``unavailable``.
+    The cab can start its own 7-minute parked-with-no-sale prompt from ``at``.
+    """
+    stamp = found.get("last_sale_at") if isinstance(found, dict) else None
+    if stamp is not None:
+        return {"at": no_idle.iso_z(stamp), "reason": None}
+    reason = found.get("reason") if isinstance(found, dict) else None
+    if not reason:
+        reason = "no_sale" if isinstance(found, dict) and found.get("known") else "unavailable"
+    return {"at": None, "reason": reason}
+
+
 def _next_stop_label(stop: Optional[dict]) -> Optional[str]:
     if not isinstance(stop, dict):
         return None
@@ -887,6 +903,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             break_state = breaks.inactive_state()
             square_state = square_offline.inactive_state()
             suggestions: list = []
+            sale = no_idle._lookup_sale(int(truck_no), driver_name_for_events, no_idle.utcnow())
             # A missing migration must not take down navigation. Roll back only this
             # savepoint; the route snapshot above still commits with the session.
             cur.execute("SAVEPOINT driver_coach_no_idle")
@@ -926,6 +943,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                     break_active=bool(break_state.get("active")),
                     square_offline_active=bool(square_state.get("active")),
                     next_stop_name=_next_stop_label(live.get("next_stop") if isinstance(live, dict) else None),
+                    sale=sale,
                 )
                 target = progress.get("targetOrder") if isinstance(progress, dict) else None
                 if isinstance(target, bool) or not isinstance(target, int):
@@ -973,6 +991,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 break_state=break_state,
                 square_offline=square_state,
                 nudge_suggestions=suggestions,
+                last_sale=_last_sale_wire(sale),
                 geotab_adherence=adherence,
                 **_cursor_payload(frozen_plan, served_orders, skipped_orders, progress),
             )

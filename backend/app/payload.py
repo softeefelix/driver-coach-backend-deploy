@@ -450,6 +450,7 @@ def build_route_payload(
     break_state: object = _OMIT,
     square_offline: object = _OMIT,
     nudge_suggestions: object = _OMIT,
+    last_sale: object = _OMIT,
     plan_source: Optional[str] = None,
     session_outcomes: Optional[dict] = None,
     remaining_stop_orders: Optional[list] = None,
@@ -493,6 +494,12 @@ def build_route_payload(
                              the caller did not evaluate it.
       - nudgeSuggestions     up to two stops from this driver's own master route.
                              Omitted only when the caller did not evaluate it.
+      - lastSale             {at, reason}. at is the latest Square sale, or null.
+                             reason is null when at is set; otherwise no_token,
+                             no_match, no_sale, or unavailable. The cab may time
+                             its own parked-with-no-sale prompt from at. This
+                             server does not score idle minutes. Omitted only
+                             when the caller did not evaluate it.
       - route.remainingStopOrders
                              unfinished frozen-plan orders in master snapshot order.
                              Present on the live poll. Confirmed Done/Skip orders are
@@ -649,5 +656,7 @@ def build_route_payload(
         payload["squareOffline"] = square_offline
     if nudge_suggestions is not _OMIT:
         payload["nudgeSuggestions"] = nudge_suggestions
+    if last_sale is not _OMIT:
+        payload["lastSale"] = last_sale
     assert_disguise_safe(payload)
     return payload

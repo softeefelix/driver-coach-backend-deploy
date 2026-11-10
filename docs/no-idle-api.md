@@ -251,13 +251,11 @@ After a break ends, a truck that is still parked starts a new idle clock on the 
   "break_duration_s": 1800,
   "lunch_allowance": 1,
   "break_allowance": 1,
-  "breaks_per_driver_day": 1,
   "overrun_grace_s": 60
-},
-"square_offline": {
-  "max_s": 3600
 }
 ```
+
+The 30-minute break and the 60-minute Square offline cap are constants in `backend/app/holds.py` (`BREAK_DURATION_S`, `SQUARE_OFFLINE_MAX_S`). This file only mirrors the break numbers the cab already shares. It does not set the cap.
 
 Stationary, moving, and pin radius are the existing `motion` block: `settled_speed_mph` 2, `moving_speed_mph` 6, `parked_radius_m` 40, `max_fix_age_s` 150. `DRIVER_COACH_MAX_FIX_AGE_S` overrides the age cap for nudges and for ending a break because the truck moved.
 
@@ -299,7 +297,7 @@ End response adds `ended`: `{ "id", "reason", "endReason", "expired", "startedAt
 
 ## Hermes read
 
-`GET /driver-coach/v1/idle-exclusions` needs no driver session. It uses the same access as `GET /driver-coach/v1/roster`: this service has no office credential. Optional query `day=YYYY-MM-DD` (Pacific). Omitted means today.
+`GET /driver-coach/v1/idle-exclusions` needs no driver session. It uses the same access as `GET /driver-coach/v1/roster`: this service has no office credential. Optional query `day=YYYY-MM-DD` (Pacific). Omitted means today. Hermes correlates a truck by `truckNo`, `driverId`, and `day`. The response has no `sessionId` and no `session_id`. A session id authorizes driver writes.
 
 The read closes overdue breaks and Square periods at their caps so history shows `expired`. It does not create a session or write a stop outcome.
 
@@ -314,11 +312,9 @@ The read closes overdue breaks and Square periods at their caps so history shows
     {
       "truckNo": 7,
       "driverId": "amina_cole",
-      "sessionId": "…",
       "break": {
         "active": false,
         "id": null,
-        "sessionId": null,
         "driverId": null,
         "truckNo": null,
         "startedAt": null,
@@ -328,7 +324,6 @@ The read closes overdue breaks and Square periods at their caps so history shows
       "squareOffline": {
         "active": true,
         "id": "…",
-        "sessionId": "…",
         "driverId": "amina_cole",
         "truckNo": 7,
         "startedAt": "2026-10-15T19:00:00Z",
@@ -343,7 +338,6 @@ The read closes overdue breaks and Square periods at their caps so history shows
       "id": "…",
       "truckNo": 7,
       "driverId": "amina_cole",
-      "sessionId": "…",
       "startedAt": "2026-10-15T18:00:00Z",
       "endedAt": "2026-10-15T18:30:00Z",
       "endsAt": "2026-10-15T18:30:00Z",
@@ -375,3 +369,13 @@ The route poll also sends `nudgeSuggestions`, at most two stops from this driver
 ```
 
 `why` is `ahead` or `dropped`. An empty list means there was nothing eligible, or the master tables could not be read. The poll still succeeds. These suggestions do not change the frozen plan or any stop outcome.
+
+## Last sale
+
+The route poll sends `lastSale`. The server does not score idle minutes. The cab can start its own prompt after 7 minutes parked with no sale by reading `at`.
+
+```json
+"lastSale": { "at": "2026-10-15T17:40:00Z", "reason": null }
+```
+
+`at` is null when there is no sale time. `reason` is then `no_token` (no `SQUARE_ACCESS_TOKEN` and no Hermes file token), `no_match` (payments could not be tied to this driver or truck), `no_sale` (Square answered and this truck had none today), or `unavailable` (the read failed). `no_token` and `no_match` are not a quiet stop. The env var is `SQUARE_ACCESS_TOKEN`. The file fallback remains `SQUARE_TOKEN=` in `~/.hermes/secrets/softeedashboard.env`.

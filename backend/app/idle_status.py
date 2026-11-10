@@ -43,7 +43,6 @@ def _history_row(kind: str, row: dict) -> dict:
         "id": row.get("id"),
         "truckNo": row.get("truck_no"),
         "driverId": row.get("driver_id"),
-        "sessionId": row.get("session_id"),
         "startedAt": iso_z(started),
         "endedAt": iso_z(row.get("ended_at")),
         "endsAt": iso_z(ends),
@@ -59,7 +58,6 @@ def _active_window(row: Optional[dict], now: datetime.datetime) -> dict:
         return {
             "active": False,
             "id": None,
-            "sessionId": None,
             "driverId": None,
             "truckNo": None,
             "startedAt": None,
@@ -73,7 +71,6 @@ def _active_window(row: Optional[dict], now: datetime.datetime) -> dict:
     return {
         "active": True,
         "id": row["id"],
-        "sessionId": row.get("session_id"),
         "driverId": row.get("driver_id"),
         "truckNo": row.get("truck_no"),
         "startedAt": iso_z(started),
@@ -101,7 +98,7 @@ def collect(cur, day: str, now: datetime.datetime) -> dict:
     breaks = _fetch(
         cur,
         """
-        SELECT id::text, session_id::text, truck_no, driver_id, break_type,
+        SELECT id::text, truck_no, driver_id, break_type,
                started_at, ended_at, duration_s, allowed_s, end_reason
         FROM shift_break
         WHERE (started_at >= %s AND started_at < %s)
@@ -115,7 +112,7 @@ def collect(cur, day: str, now: datetime.datetime) -> dict:
     squares = _fetch(
         cur,
         """
-        SELECT id::text, session_id::text, truck_no, driver_id, started_at,
+        SELECT id::text, truck_no, driver_id, started_at,
                ended_at, duration_s, allowed_s, end_reason
         FROM square_offline_period
         WHERE (started_at >= %s AND started_at < %s)
@@ -129,7 +126,7 @@ def collect(cur, day: str, now: datetime.datetime) -> dict:
     sessions = _fetch(
         cur,
         """
-        SELECT session_id::text, truck_no, driver_id, started_at
+        SELECT truck_no, driver_id, started_at
         FROM driver_coach_session
         WHERE started_at >= %s AND started_at < %s
         ORDER BY started_at ASC
@@ -141,22 +138,8 @@ def collect(cur, day: str, now: datetime.datetime) -> dict:
     def break_dict(row) -> dict:
         return {
             "id": row[0],
-            "session_id": row[1],
-            "truck_no": row[2],
-            "driver_id": row[3],
-            "started_at": row[5],
-            "ended_at": row[6],
-            "duration_s": row[7],
-            "allowed_s": row[8],
-            "end_reason": row[9],
-        }
-
-    def square_dict(row) -> dict:
-        return {
-            "id": row[0],
-            "session_id": row[1],
-            "truck_no": row[2],
-            "driver_id": row[3],
+            "truck_no": row[1],
+            "driver_id": row[2],
             "started_at": row[4],
             "ended_at": row[5],
             "duration_s": row[6],
@@ -164,8 +147,20 @@ def collect(cur, day: str, now: datetime.datetime) -> dict:
             "end_reason": row[8],
         }
 
-    break_rows = [break_dict(row) for row in breaks if _overlaps(row[5], row[6], start, end)]
-    square_rows = [square_dict(row) for row in squares if _overlaps(row[4], row[5], start, end)]
+    def square_dict(row) -> dict:
+        return {
+            "id": row[0],
+            "truck_no": row[1],
+            "driver_id": row[2],
+            "started_at": row[3],
+            "ended_at": row[4],
+            "duration_s": row[5],
+            "allowed_s": row[6],
+            "end_reason": row[7],
+        }
+
+    break_rows = [break_dict(row) for row in breaks if _overlaps(row[4], row[5], start, end)]
+    square_rows = [square_dict(row) for row in squares if _overlaps(row[3], row[4], start, end)]
     history = [_history_row("break", row) for row in break_rows]
     history.extend(_history_row("square_offline", row) for row in square_rows)
     history.sort(key=lambda row: (row["startedAt"] or "", row["kind"], row["id"] or ""))
@@ -177,7 +172,6 @@ def collect(cur, day: str, now: datetime.datetime) -> dict:
             by_truck[number] = {
                 "truckNo": number,
                 "driverId": None,
-                "sessionId": None,
                 "break": _active_window(None, now),
                 "squareOffline": _active_window(None, now),
                 "_started": None,
@@ -185,7 +179,7 @@ def collect(cur, day: str, now: datetime.datetime) -> dict:
         return by_truck[number]
 
     for row in sessions:
-        session_id, truck_no, driver_id, started_at = row
+        truck_no, driver_id, started_at = row
         if truck_no is None:
             continue
         slot = truck(int(truck_no))
@@ -193,7 +187,6 @@ def collect(cur, day: str, now: datetime.datetime) -> dict:
         if slot["_started"] is None or (started and started >= slot["_started"]):
             slot["_started"] = started
             slot["driverId"] = driver_id
-            slot["sessionId"] = session_id
 
     for row in break_rows:
         if row.get("truck_no") is None or row.get("ended_at") is not None:

@@ -247,6 +247,7 @@ def test_idle_episode_records_nudges_and_poll_hides_them_on_break(database, sche
 
     first = service.do_route(sid, schema)
     assert first["nudge"] is None
+    assert first["lastSale"] == {"at": None, "reason": "no_sale"}
     assert first["break"]["active"] is False
     assert first["break"]["lunchAllowed"] == 1
     assert "banner" not in first

@@ -102,6 +102,14 @@ def build_scorecard(
 
 
 def _square_token(path: str = "~/.hermes/secrets/softeedashboard.env") -> Optional[str]:
+    """Square access token. ``SQUARE_ACCESS_TOKEN`` wins; the Hermes file is fallback.
+
+    The file line is still ``SQUARE_TOKEN=``. A blank env value is ignored so a
+    local file keeps working. No token means callers must not invent a sale.
+    """
+    env = os.environ.get("SQUARE_ACCESS_TOKEN")
+    if isinstance(env, str) and env.strip():
+        return env.strip()
     try:
         with open(os.path.expanduser(path)) as handle:
             for line in handle:
@@ -267,9 +275,11 @@ def last_truck_sale(
     """
     now = now or dt.datetime.now(dt.timezone.utc)
     if payments is None or team is None:
+        token_present = _square_token() is not None
         payments, team = _cached_today_payments(now)
-    if payments is None or team is None:
-        return {"known": False, "last_sale_at": None}
+        if payments is None or team is None:
+            reason = "no_token" if not token_present else "unavailable"
+            return {"known": False, "last_sale_at": None, "reason": reason}
     driver_known = bool(_norm(driver_name))
     last = None
     matched = False
@@ -286,8 +296,10 @@ def last_truck_sale(
         if when is not None and (last is None or when > last):
             last = when
     if not driver_known and not matched:
-        return {"known": False, "last_sale_at": None}
-    return {"known": True, "last_sale_at": last}
+        return {"known": False, "last_sale_at": None, "reason": "no_match"}
+    if last is None:
+        return {"known": True, "last_sale_at": None, "reason": "no_sale"}
+    return {"known": True, "last_sale_at": last, "reason": None}
 
 
 def live_ticker(signed_in: str, day: Optional[dt.date] = None) -> Optional[list[dict]]:

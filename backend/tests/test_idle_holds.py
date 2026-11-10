@@ -181,15 +181,15 @@ def test_break_expires_without_a_client_and_square_periods_are_all_logged(databa
     assert office["squareOfflineMaxS"] == 3600
     assert office["trucks"][0]["truckNo"] == 7
     assert office["trucks"][0]["driverId"] == "amina_cole"
-    assert office["trucks"][0]["sessionId"] == sid
     assert office["trucks"][0]["break"]["active"] is False
+    assert "sessionId" not in office["trucks"][0]
     logged = office["history"][0]
     assert logged["kind"] == "break"
     assert logged["endReason"] == "expired"
     assert logged["expired"] is True
     assert logged["durationS"] == 1800
     assert logged["endedAt"] == "2026-10-15T18:30:00Z"
-    assert logged["sessionId"] == sid
+    _assert_no_session_key(office)
 
     with pytest.raises(breaks.BreakError) as refused:
         service.do_start_break(service.BreakStartRequest(session_id=sid, type="lunch"))
@@ -227,6 +227,19 @@ def test_break_expires_without_a_client_and_square_periods_are_all_logged(databa
     bare = client.get("/driver-coach/v1/idle-exclusions")
     assert bare.status_code == 200
     assert "breakDurationS" in bare.json()
+    _assert_no_session_key(bare.json())
+    _assert_no_session_key(office)
+
+
+def _assert_no_session_key(payload) -> None:
+    """A session id authorizes driver writes, so this office read must not carry one."""
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            assert key not in {"sessionId", "session_id"}
+            _assert_no_session_key(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            _assert_no_session_key(item)
 
 
 def test_idle_status_empty_day_shape():

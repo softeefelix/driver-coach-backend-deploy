@@ -588,10 +588,11 @@ def _lookup_sale(truck_no: int, driver_name: str, now: datetime.datetime) -> dic
 
         found = scorecard.last_truck_sale(truck_no=int(truck_no), driver_name=driver_name or "", now=now)
     except Exception:
-        return {"known": False, "last_sale_at": None}
+        return {"known": False, "last_sale_at": None, "reason": "unavailable"}
     if not isinstance(found, dict):
-        return {"known": False, "last_sale_at": None}
+        return {"known": False, "last_sale_at": None, "reason": "unavailable"}
     return {
         "known": bool(found.get("known")),
         "last_sale_at": found.get("last_sale_at"),
+        "reason": found.get("reason"),
     }
