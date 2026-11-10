@@ -297,7 +297,9 @@ End response adds `ended`: `{ "id", "reason", "endReason", "expired", "startedAt
 
 ## Hermes read
 
-`GET /driver-coach/v1/idle-exclusions` needs no driver session. It uses the same access as `GET /driver-coach/v1/roster`: this service has no office credential. Optional query `day=YYYY-MM-DD` (Pacific). Omitted means today. Hermes correlates a truck by `truckNo`, `driverId`, and `day`. The response has no `sessionId` and no `session_id`. A session id authorizes driver writes.
+`GET /driver-coach/v1/idle-exclusions` needs no driver session. Optional query `day=YYYY-MM-DD` (Pacific). Omitted means today. Hermes correlates a truck by `truckNo`, `driverId`, and `day`. The response has no `sessionId` and no `session_id`. A session id authorizes driver writes.
+
+When `DC_OFFICE_KEY` is set, the request must send header `X-DC-Office-Key` with that value or the response is `401`. When the env is unset, the read stays open. The key is compared in constant time and is never logged.
 
 The read is a read-only transaction. It does not update or commit. A hold past `started_at` + `allowedS` is shown with `active` false, and in `history` with `endedAt` equal to `endsAt`, `endReason` `expired`, `expired` true, and `durationS` equal to `allowedS`, even when the stored row is still open. The cab poll, start, and end paths close the row. The read does not create a session or write a stop outcome.
 
@@ -351,6 +353,57 @@ The read is a read-only transaction. It does not update or commit. A hold past `
 ```
 
 `history[].kind` is `break` or `square_offline`. `endReason` is `driver`, `expired`, `moving`, or null while the period is still open.
+
+`squareOfflineTotals` is one row per truck and driver. `count` is the number of periods. `minutes` is the sum of clock-capped durations, rounded to the nearest minute. A period joins the previous chain when it starts within 5 minutes of the previous derived end. `longestChainMinutes` is the longest such run.
+
+```json
+"squareOfflineTotals": [
+  {
+    "truckNo": 7,
+    "driverId": "amina_cole",
+    "count": 3,
+    "minutes": 26,
+    "longestChainMinutes": 16
+  }
+]
+```
+
+## Scorecard ingest
+
+`POST /driver-coach/v1/idle-scorecard` is how Hermes pushes idle totals. It requires `DC_OFFICE_KEY`. If that env is unset the response is `503`. If it is set and `X-DC-Office-Key` does not match, the response is `401`.
+
+```json
+{
+  "day": "2026-10-15",
+  "asOf": "2026-10-15T18:00:00Z",
+  "drivers": [
+    {
+      "driverId": "amina_cole",
+      "truckNo": 7,
+      "idleMinutesToday": 12,
+      "idleMinutesWeek": 40,
+      "fleetRank": 3,
+      "fleetSize": 18,
+      "cleanDayStreak": 4
+    }
+  ]
+}
+```
+
+`truckNo` may be omitted. Rows upsert on `(day, driverId)`. Success is `{ "day", "upserted" }`. Apply `backend/migrations/009_idle_scorecard.sql` first. The route poll then adds `scorecard` for that driver on the Pacific today:
+
+```json
+"scorecard": {
+  "idleMinutesToday": 12,
+  "idleMinutesWeek": 40,
+  "fleetRank": 3,
+  "fleetSize": 18,
+  "cleanDayStreak": 4,
+  "asOf": "2026-10-15T18:00:00Z"
+}
+```
+
+The key is omitted when Hermes has not posted this driver, or when the table is missing. The poll reads it before the session row lock. This server does not compute the minutes.
 
 ## Nudge suggestions
 

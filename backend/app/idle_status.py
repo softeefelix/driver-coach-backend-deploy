@@ -13,6 +13,9 @@ from typing import Optional
 from .holds import BREAK_DURATION_S, SQUARE_OFFLINE_MAX_S, aware, day_bounds_for
 from .no_idle import iso_z
 
+# A later Square-offline period joins the previous chain when it starts within this gap.
+SQUARE_OFFLINE_CHAIN_GAP = datetime.timedelta(minutes=5)
+
 
 def empty_payload(day: str, now: datetime.datetime) -> dict:
     return {
@@ -23,6 +26,7 @@ def empty_payload(day: str, now: datetime.datetime) -> dict:
         "squareOfflineMaxS": SQUARE_OFFLINE_MAX_S,
         "trucks": [],
         "history": [],
+        "squareOfflineTotals": [],
     }
 
 
@@ -50,6 +54,78 @@ def _project(row: dict, now: datetime.datetime) -> dict:
     shown["end_reason"] = "expired"
     shown["duration_s"] = allowed
     return shown
+
+
+def _effective_end(row: dict, now: datetime.datetime) -> datetime.datetime:
+    ended = aware(row.get("ended_at"))
+    if ended is not None:
+        return ended
+    started = aware(row.get("started_at"))
+    current = aware(now)
+    allowed = int(row.get("allowed_s") or 0)
+    if started is None or allowed <= 0:
+        return current
+    return min(current, started + datetime.timedelta(seconds=allowed))
+
+
+def _effective_duration_s(row: dict, now: datetime.datetime) -> int:
+    """Clock-capped seconds. Projected rows already store the cap in duration_s."""
+    if row.get("duration_s") is not None and row.get("ended_at") is not None:
+        return max(0, int(row["duration_s"]))
+    started = aware(row.get("started_at"))
+    if started is None:
+        return 0
+    return max(0, int((_effective_end(row, now) - started).total_seconds()))
+
+
+def _minutes(seconds: int) -> int:
+    return int(round(seconds / 60.0))
+
+
+def square_offline_totals(rows: list[dict], now: datetime.datetime) -> list[dict]:
+    """Per truck and driver: count, total minutes, and the longest chained run.
+
+    The next period stays in the chain when it starts within five minutes of
+    the previous derived end. Durations are the clock-capped seconds.
+    """
+    groups: dict[tuple, list] = {}
+    for row in rows:
+        truck = row.get("truck_no")
+        if isinstance(truck, bool) or not isinstance(truck, int):
+            continue
+        groups.setdefault((truck, row.get("driver_id")), []).append(row)
+    totals = []
+    for (truck, driver), periods in groups.items():
+        periods.sort(key=lambda item: (aware(item.get("started_at")) or aware(now), str(item.get("id") or "")))
+        total_s = 0
+        chain_s = 0
+        longest_s = 0
+        previous_end = None
+        for period in periods:
+            seconds = _effective_duration_s(period, now)
+            total_s += seconds
+            started = aware(period.get("started_at"))
+            if (
+                previous_end is not None
+                and started is not None
+                and started - previous_end <= SQUARE_OFFLINE_CHAIN_GAP
+            ):
+                chain_s += seconds
+            else:
+                chain_s = seconds
+            longest_s = max(longest_s, chain_s)
+            previous_end = _effective_end(period, now)
+        totals.append(
+            {
+                "truckNo": truck,
+                "driverId": driver,
+                "count": len(periods),
+                "minutes": _minutes(total_s),
+                "longestChainMinutes": _minutes(longest_s),
+            }
+        )
+    totals.sort(key=lambda item: (item["truckNo"], item["driverId"] is None, item["driverId"] or ""))
+    return totals
 
 
 def _history_row(kind: str, row: dict) -> dict:
@@ -229,6 +305,7 @@ def collect(cur, day: str, now: datetime.datetime) -> dict:
     body = empty_payload(day, now)
     body["trucks"] = trucks
     body["history"] = history
+    body["squareOfflineTotals"] = square_offline_totals(square_rows, now)
     return body
 
 
