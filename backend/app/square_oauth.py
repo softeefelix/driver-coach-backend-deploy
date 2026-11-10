@@ -5,7 +5,10 @@ When ``SQUARE_OAUTH_APP_ID`` is unset, every route here is disabled and token
 resolution does not touch the database.
 
 Connect links are single-use nonces. Only their SHA-256 hash is stored.
-``/start`` accepts that nonce and does not accept the office key.
+``GET /start`` checks the nonce and does not consume it. ``POST /start``
+consumes it and creates the PKCE state. A later GET or POST reuses that
+state while it is unused and unexpired. ``/start`` does not accept the
+office key.
 """
 from __future__ import annotations
 
@@ -28,7 +31,7 @@ import uuid
 from typing import NamedTuple, Optional
 
 import psycopg2
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import office_key
@@ -54,8 +57,13 @@ START_PATH = "/driver-coach/v1/square/oauth/start"
 CALLBACK_PATH = "/driver-coach/v1/square/oauth/callback"
 STATUS_PATH = "/driver-coach/v1/square/oauth/status"
 SUCCESS_TEXT = "Driver Coach now has read-only Square access"
+CONFIRM_TITLE = "Connect Square to Driver Coach"
+ALREADY_CONNECTED = "Square is already connected"
 LINK_TTL = dt.timedelta(minutes=30)
 STATE_TTL = dt.timedelta(minutes=15)
+# A second GET/POST can show the same Square URL for this long after the
+# nonce is consumed, and never past the PKCE state's own expiry.
+REPLAY_WINDOW = dt.timedelta(minutes=10)
 REFRESH_WITHIN = dt.timedelta(days=1)
 CLAIM_STALE = dt.timedelta(seconds=45)
 CACHE_TTL_S = 30.0
@@ -87,6 +95,15 @@ class StateRejected(Exception):
     def __init__(self, reason: str):
         self.reason = reason
         super().__init__(reason)
+
+
+class StartDecision(NamedTuple):
+    kind: str
+    status: int = 400
+    message: str = ""
+    location: str = ""
+    nonce: Optional[str] = None
+    fields: tuple[tuple[str, str], ...] = ()
 
 
 class Decision(NamedTuple):
@@ -213,10 +230,18 @@ def issue_link() -> dict:
     return {"url": _public_start_url(nonce), "expiresAt": _iso(expires)}
 
 
-def consume_link(nonce: Optional[str]) -> str:
+def _resolve_start(nonce: Optional[str], *, consume: bool) -> StartDecision:
+    """Classify a /start request.
+
+    GET passes ``consume=False`` and never writes. POST passes ``consume=True``.
+    The first successful POST marks the nonce used and inserts the PKCE state
+    in that same transaction. The state primary key is the nonce hash, which
+    is already the link's primary key, so a later request can reload the
+    verifier from ``square_oauth_state`` without storing it anywhere else.
+    """
     digest = _hash_nonce(nonce)
     if digest is None:
-        return "invalid"
+        return StartDecision("error", 400, _link_message("invalid"))
 
     def run(conn):
         with conn.cursor() as cur:
@@ -228,59 +253,90 @@ def consume_link(nonce: Optional[str]) -> str:
             row = cur.fetchone()
             if row is None:
                 conn.rollback()
-                return "invalid"
+                return StartDecision("error", 400, _link_message("invalid"))
             expires_at, used_at = row
-            if used_at is not None:
-                conn.rollback()
-                return "replay"
-            if _aware(expires_at) <= _now():
-                conn.rollback()
-                return "expired"
-            cur.execute(
-                "UPDATE square_oauth_link SET used_at = now() WHERE token_hash = %s",
-                (digest,),
-            )
-        conn.commit()
-        return "ok"
+            if used_at is None:
+                if _aware(expires_at) <= _now():
+                    conn.rollback()
+                    return StartDecision("error", 400, _link_message("expired"))
+                if not consume:
+                    conn.rollback()
+                    return StartDecision("confirm", 200, nonce=nonce)
+                return _consume_and_redirect(conn, cur, digest)
+            decision = _replay_decision(cur, digest, used_at)
+            conn.rollback()
+            return decision
 
     return _db(run)
 
 
-def begin_authorization() -> str:
+def _consume_and_redirect(conn, cur, digest: str) -> StartDecision:
+    verifier, _challenge = _pkce_pair()
+    redir = redirect_uri()
+    fields = _authorize_fields(digest, verifier, redir)
+    location = _authorize_url(fields)
+    cur.execute(
+        "DELETE FROM square_oauth_state WHERE expires_at < now() - interval '1 day'"
+    )
+    cur.execute(
+        """INSERT INTO square_oauth_state
+               (state, code_verifier, redirect_uri, expires_at)
+           VALUES (%s, %s, %s, %s)""",
+        (digest, verifier, redir, _now() + STATE_TTL),
+    )
+    cur.execute(
+        """UPDATE square_oauth_link SET used_at = now()
+           WHERE token_hash = %s AND used_at IS NULL""",
+        (digest,),
+    )
+    if cur.rowcount != 1:
+        conn.rollback()
+        return StartDecision("error", 400, _link_message("replay"))
+    conn.commit()
+    return StartDecision("redirect", 303, location=location)
+
+
+def _replay_decision(cur, digest: str, consumed_at) -> StartDecision:
+    cur.execute(
+        """SELECT code_verifier, redirect_uri, expires_at, used_at
+           FROM square_oauth_state WHERE state = %s FOR UPDATE""",
+        (digest,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return StartDecision("error", 400, _link_message("replay"))
+    verifier, redir, expires_at, state_used = row
+    if state_used is not None:
+        cur.execute("SELECT id FROM square_oauth_token WHERE id = 1")
+        if cur.fetchone() is not None:
+            return StartDecision("error", 400, ALREADY_CONNECTED)
+        return StartDecision("error", 400, _link_message("replay"))
+    if not isinstance(verifier, str) or not verifier:
+        return StartDecision("error", 400, _link_message("replay"))
+    if _aware(expires_at) <= _now():
+        return StartDecision("error", 400, _state_message("expired"))
+    if _now() - _aware(consumed_at) > REPLAY_WINDOW:
+        return StartDecision("error", 400, _link_message("expired"))
+    return StartDecision("confirm", 200, fields=_authorize_fields(digest, verifier, redir))
+
+
+def _authorize_fields(state: str, verifier: str, redir: str) -> tuple[tuple[str, str], ...]:
     app_id = configured_app_id()
     if not app_id:
         raise OAuthExchangeError("oauth_disabled")
-    verifier, challenge = _pkce_pair()
-    state = secrets.token_urlsafe(32)
-    redir = redirect_uri()
-    expires = _now() + STATE_TTL
-
-    def run(conn):
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM square_oauth_state WHERE expires_at < now() - interval '1 day'"
-            )
-            cur.execute(
-                """INSERT INTO square_oauth_state
-                       (state, code_verifier, redirect_uri, expires_at)
-                   VALUES (%s, %s, %s, %s)""",
-                (state, verifier, redir, expires),
-            )
-        conn.commit()
-
-    _db(run)
-    query = urllib.parse.urlencode(
-        [
-            ("client_id", app_id),
-            ("scope", " ".join(SQUARE_SCOPES)),
-            ("session", "false"),
-            ("state", state),
-            ("code_challenge", challenge),
-            ("code_challenge_method", "S256"),
-            ("redirect_uri", redir),
-        ]
+    return (
+        ("client_id", app_id),
+        ("scope", " ".join(SQUARE_SCOPES)),
+        ("session", "false"),
+        ("state", state),
+        ("code_challenge", code_challenge_s256(verifier)),
+        ("code_challenge_method", "S256"),
+        ("redirect_uri", redir),
     )
-    return AUTHORIZE_URL + "?" + query
+
+
+def _authorize_url(fields: tuple[tuple[str, str], ...]) -> str:
+    return AUTHORIZE_URL + "?" + urllib.parse.urlencode(fields)
 
 
 def consume_state(state: Optional[str]) -> tuple[str, str]:
@@ -855,6 +911,74 @@ def _iso(value: dt.datetime) -> str:
     return _aware(value).astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _posted_nonce(raw: bytes) -> Optional[str]:
+    if not raw:
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    try:
+        parsed = urllib.parse.parse_qs(text, keep_blank_values=False, separator="&")
+    except ValueError:
+        return None
+    values = parsed.get("t")
+    if not values:
+        return None
+    nonce = values[0]
+    if not isinstance(nonce, str) or not nonce:
+        return None
+    return nonce
+
+
+def _hidden(name: str, value: str) -> str:
+    return (
+        '<input type="hidden" name="'
+        + html.escape(name, quote=True)
+        + '" value="'
+        + html.escape(value, quote=True)
+        + '">'
+    )
+
+
+def _confirm_page(decision: StartDecision) -> HTMLResponse:
+    if decision.fields:
+        method = "get"
+        action = AUTHORIZE_URL
+        fields = "".join(_hidden(name, value) for name, value in decision.fields)
+    else:
+        method = "post"
+        action = START_PATH
+        fields = _hidden("t", decision.nonce or "")
+    title = html.escape(CONFIRM_TITLE)
+    body = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="robots" content="noindex">'
+        "<title>" + title + "</title></head><body><h1>" + title + "</h1>"
+        "<p>This requests read-only access to payments and team members.</p>"
+        '<form method="' + method + '" action="' + html.escape(action, quote=True) + '" '
+        'referrerpolicy="no-referrer">'
+        + fields
+        + '<button type="submit">Continue to Square</button></form></body></html>'
+    )
+    return HTMLResponse(
+        body,
+        status_code=200,
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
+def _start_response(decision: StartDecision):
+    if decision.kind == "redirect":
+        response = RedirectResponse(decision.location, status_code=303)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+    if decision.kind == "confirm":
+        return _confirm_page(decision)
+    return _page(decision.message, decision.status)
+
+
 def _page(message: str, status: int) -> HTMLResponse:
     body = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
@@ -905,27 +1029,34 @@ def oauth_link(
 
 
 @router.get(START_PATH)
-def oauth_start(t: Optional[str] = None):
+def oauth_start_get(t: Optional[str] = None):
     if not oauth_enabled():
         return _page("Square OAuth is disabled.", 404)
     try:
         assert_storage()
-        outcome = consume_link(t)
-    except OAuthStorageUnavailable:
-        return _page("Square OAuth storage is not available.", 503)
-    if outcome != "ok":
-        return _page(_link_message(outcome), 400)
-    try:
-        target = begin_authorization()
+        decision = _resolve_start(t, consume=False)
     except OAuthStorageUnavailable:
         return _page("Square OAuth storage is not available.", 503)
     except Exception:
         _log.warning("square oauth start failed")
         return _page("Square authorization could not be started.", 500)
-    response = RedirectResponse(target, status_code=302)
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return response
+    return _start_response(decision)
+
+
+@router.post(START_PATH)
+async def oauth_start_post(request: Request):
+    if not oauth_enabled():
+        return _page("Square OAuth is disabled.", 404)
+    try:
+        nonce = _posted_nonce(await request.body())
+        assert_storage()
+        decision = _resolve_start(nonce, consume=True)
+    except OAuthStorageUnavailable:
+        return _page("Square OAuth storage is not available.", 503)
+    except Exception:
+        _log.warning("square oauth start failed")
+        return _page("Square authorization could not be started.", 500)
+    return _start_response(decision)
 
 
 @router.get(CALLBACK_PATH)
