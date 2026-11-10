@@ -1,13 +1,11 @@
-"""Per-shift lunch and break for a signed-in Driver Coach session.
+"""One 30-minute break per driver per Pacific day.
 
-The session is the shift: one 30-minute lunch and two 15-minute breaks, both
-configurable in thresholds.json. An active break suppresses idle nudges. It
-ends when the driver ends it, when the allotment runs out, or when a fresh
-Geotab fix shows the truck moving (``moving_speed_mph``).
-
-Running past the allotment by more than ``overrun_grace_s`` is flagged. The
-grace covers the ~20s route poll, so ending on the next poll is not an overrun.
-A start past the allowance is refused and flagged. Nothing is written to public.
+``lunch`` and ``break`` are the same hold: the cab may send either type, and
+either one uses the single daily break. The length is ``BREAK_DURATION_S``.
+The server closes it at that cap even if the cab never calls end; the stored
+end is the cap, not the time the poll happened to notice. A fresh Geotab fix
+showing the truck moving still ends it early. A second start the same Pacific
+day is refused and flagged. Nothing is written to public.
 """
 from __future__ import annotations
 
@@ -16,6 +14,7 @@ import uuid
 from typing import Optional
 
 from .config import break_settings
+from .holds import BREAK_DURATION_S, BREAKS_PER_DRIVER_DAY, day_bounds, on_day, pacific_day
 from .no_idle import aware, iso_z, utcnow
 
 BREAK_TYPES = ("lunch", "break")
@@ -34,15 +33,13 @@ def load_config() -> dict:
 
 
 def duration_s(cfg: dict, break_type: str) -> int:
-    if break_type == "lunch":
-        return int(cfg["lunch_duration_s"])
-    return int(cfg["break_duration_s"])
+    del cfg, break_type
+    return BREAK_DURATION_S
 
 
 def allowance(cfg: dict, break_type: str) -> int:
-    if break_type == "lunch":
-        return int(cfg["lunch_allowance"])
-    return int(cfg["break_allowance"])
+    del cfg, break_type
+    return BREAKS_PER_DRIVER_DAY
 
 
 def end_stats(started_at: datetime.datetime, ended_at: datetime.datetime, allowed_s: int, grace_s: int) -> dict:
@@ -57,21 +54,19 @@ def end_stats(started_at: datetime.datetime, ended_at: datetime.datetime, allowe
 
 
 def auto_end_reason(active: Optional[dict], now: datetime.datetime, *, fresh: bool, moving: bool) -> Optional[str]:
-    """Why an active break should end on this poll, or None to leave it running."""
+    """Why an active break should end on this poll, or None to leave it running.
+
+    The cap wins over movement. A poll that arrives after 30 minutes records
+    ``expired`` at the cap even if the truck is also moving.
+    """
     if not active:
         return None
-    if fresh and moving:
-        return "moving"
     ends = aware(active["started_at"]) + datetime.timedelta(seconds=int(active["allowed_s"]))
     if aware(now) >= ends:
         return "expired"
+    if fresh and moving:
+        return "moving"
     return None
-
-
-def _counts(rows: list[dict]) -> tuple[int, int]:
-    lunch = sum(1 for row in rows if row.get("break_type") == "lunch")
-    breaks = sum(1 for row in rows if row.get("break_type") == "break")
-    return lunch, breaks
 
 
 def wire_state(
@@ -82,9 +77,12 @@ def wire_state(
     now: datetime.datetime,
     cfg: Optional[dict] = None,
 ) -> dict:
-    cfg = cfg or load_config()
+    del cfg
     now = aware(now)
-    lunch_used, break_used = _counts(rows)
+    used = sum(1 for row in rows if row.get("started_at") and on_day(row["started_at"], now))
+    # Both legacy counters move together. An older cab that tracks lunch and
+    # short breaks separately still sees the one daily break as used up.
+    taken = 1 if used else 0
     body = {
         "active": False,
         "type": None,
@@ -92,10 +90,13 @@ def wire_state(
         "endsAt": None,
         "remainingS": 0,
         "allowedS": None,
-        "lunchUsed": lunch_used,
-        "lunchAllowed": int(cfg["lunch_allowance"]),
-        "breakUsed": break_used,
-        "breakAllowed": int(cfg["break_allowance"]),
+        "used": used,
+        "allowed": BREAKS_PER_DRIVER_DAY,
+        "day": pacific_day(now),
+        "lunchUsed": taken,
+        "lunchAllowed": BREAKS_PER_DRIVER_DAY,
+        "breakUsed": taken,
+        "breakAllowed": BREAKS_PER_DRIVER_DAY,
         "latestFlag": _flag_wire(latest_flag),
     }
     if not active or active.get("ended_at") is not None:
@@ -172,17 +173,61 @@ def _lock_session(cur, session_id: str) -> tuple:
     return row[0], row[1]
 
 
-def load_breaks(cur, session_id: str) -> list[dict]:
+def _lock_driver(cur, driver_id: Optional[str], session_id: str) -> None:
+    cur.execute(
+        "SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)",
+        (f"break:{driver_id or session_id}",),
+    )
+
+
+def expire_overdue(
+    cur,
+    now: datetime.datetime,
+    *,
+    driver_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> bool:
+    """Close open breaks at their stored cap. The recorded end is the cap."""
+    now = aware(now)
+    sql = """
+        UPDATE shift_break
+           SET ended_at = started_at + (allowed_s * INTERVAL '1 second'),
+               duration_s = allowed_s,
+               end_reason = 'expired',
+               overrun_s = 0,
+               flagged = false
+         WHERE ended_at IS NULL
+           AND started_at + (allowed_s * INTERVAL '1 second') <= %s
+    """
+    params: list = [now]
+    if driver_id is not None or session_id is not None:
+        sql += " AND (session_id = %s OR (%s IS NOT NULL AND driver_id = %s))"
+        params.extend([session_id, driver_id, driver_id])
+    cur.execute(sql, params)
+    return cur.rowcount > 0
+
+
+def load_breaks(cur, session_id: str, driver_id: Optional[str] = None, now: Optional[datetime.datetime] = None) -> list[dict]:
+    """This session's breaks plus this driver's breaks on the Pacific day."""
+    current = aware(now or utcnow())
+    start, end = day_bounds(current)
     cur.execute(
         """
         SELECT id, break_type, started_at, ended_at, allowed_s, duration_s,
                overrun_s, flagged, end_reason, truck_no, driver_id
         FROM shift_break
         WHERE session_id = %s
+           OR (
+                %s IS NOT NULL AND driver_id = %s
+                AND (
+                    (started_at >= %s AND started_at < %s)
+                    OR ended_at IS NULL
+                )
+           )
         ORDER BY started_at ASC
         FOR UPDATE
         """,
-        (session_id,),
+        (session_id, driver_id, driver_id, start, end),
     )
     return [_row_from_sql(row) for row in cur.fetchall()]
 
@@ -260,19 +305,24 @@ def _finish(
     reason: str,
     cfg: dict,
 ) -> tuple[dict, Optional[dict]]:
-    stats = end_stats(row["started_at"], now, int(row["allowed_s"]), int(cfg["overrun_grace_s"]))
+    if reason == "expired":
+        ended_at = aware(row["started_at"]) + datetime.timedelta(seconds=int(row["allowed_s"]))
+        stats = {"duration_s": int(row["allowed_s"]), "overrun_s": 0, "flagged": False}
+    else:
+        ended_at = aware(now)
+        stats = end_stats(row["started_at"], ended_at, int(row["allowed_s"]), int(cfg["overrun_grace_s"]))
     cur.execute(
         """
         UPDATE shift_break
            SET ended_at = %s, duration_s = %s, end_reason = %s, overrun_s = %s, flagged = %s
-         WHERE id = %s
+         WHERE id = %s AND ended_at IS NULL
         """,
-        (aware(now), stats["duration_s"], reason, stats["overrun_s"], stats["flagged"], row["id"]),
+        (ended_at, stats["duration_s"], reason, stats["overrun_s"], stats["flagged"], row["id"]),
     )
     row = dict(row)
     row.update(
         {
-            "ended_at": aware(now),
+            "ended_at": ended_at,
             "duration_s": stats["duration_s"],
             "end_reason": reason,
             "overrun_s": stats["overrun_s"],
@@ -300,10 +350,15 @@ def _finish(
 
 
 def _ended_payload(row: dict) -> dict:
+    reason = row.get("end_reason")
     return {
         "id": row["id"],
         "type": row["break_type"],
-        "reason": row.get("end_reason"),
+        "reason": reason,
+        "endReason": reason,
+        "expired": reason == "expired",
+        "startedAt": iso_z(row.get("started_at")),
+        "endedAt": iso_z(row.get("ended_at")),
         "durationS": row.get("duration_s"),
         "overrunS": row.get("overrun_s") or 0,
         "flagged": bool(row.get("flagged")),
@@ -324,9 +379,9 @@ def reconcile_on_poll(
     """Auto-end a break that has expired or whose truck is moving. Returns wire state."""
     now = aware(now or utcnow())
     cfg = cfg or load_config()
-    rows = load_breaks(cur, session_id)
+    wrote = expire_overdue(cur, now, driver_id=driver_id, session_id=session_id)
+    rows = load_breaks(cur, session_id, driver_id, now)
     latest = load_latest_flag(cur, session_id)
-    wrote = False
     opens = _open_rows(rows)
     # Keep a single active break. Older duplicates are closed without a flag.
     for extra in opens[:-1]:
@@ -366,7 +421,18 @@ def start(cur, *, session_id: str, break_type: str, now: Optional[datetime.datet
             commit=False,
         )
     truck_no, driver_id = _lock_session(cur, session_id)
-    rows = load_breaks(cur, session_id)
+    if not isinstance(driver_id, str) or not driver_id.strip():
+        raise BreakError(
+            409,
+            {
+                "error": "no_driver",
+                "message": "A driver is required to start a break.",
+            },
+            commit=False,
+        )
+    _lock_driver(cur, driver_id, session_id)
+    expire_overdue(cur, now, driver_id=driver_id, session_id=session_id)
+    rows = load_breaks(cur, session_id, driver_id, now)
     latest = load_latest_flag(cur, session_id)
     active = _open_rows(rows)
     if active:
@@ -380,15 +446,10 @@ def start(cur, *, session_id: str, break_type: str, now: Optional[datetime.datet
             },
             commit=False,
         )
-    used = _counts(rows)[0 if break_type == "lunch" else 1]
+    used = sum(1 for row in rows if row.get("started_at") and on_day(row["started_at"], now))
     allowed = allowance(cfg, break_type)
     if used >= allowed:
-        noun = "lunch" if break_type == "lunch" else "break"
-        detail = (
-            f"This shift already has its {noun}."
-            if break_type == "lunch"
-            else f"This shift already used {allowed} breaks."
-        )
+        detail = "This driver already used today's break."
         flag = _insert_flag(
             cur,
             session_id=session_id,
@@ -439,20 +500,29 @@ def end(cur, *, session_id: str, now: Optional[datetime.datetime] = None, reason
     """End the active break. Raises KeyError or BreakError when none is running."""
     now = aware(now or utcnow())
     cfg = cfg or load_config()
-    _lock_session(cur, session_id)
-    rows = load_breaks(cur, session_id)
+    _truck, driver_id = _lock_session(cur, session_id)
+    _lock_driver(cur, driver_id, session_id)
+    rows = load_breaks(cur, session_id, driver_id, now)
     latest = load_latest_flag(cur, session_id)
     active = _open_rows(rows)
-    if not active:
+    if active:
+        current = active[-1]
+        cap = aware(current["started_at"]) + datetime.timedelta(seconds=int(current["allowed_s"]))
+        close_as = "expired" if aware(now) >= cap else reason
+        finished, flag = _finish(cur, current, session_id=session_id, now=now, reason=close_as, cfg=cfg)
+        _replace(rows, finished)
+        if flag:
+            latest = flag
         state = wire_state(rows, active=None, latest_flag=latest, now=now, cfg=cfg)
-        raise BreakError(
-            409,
-            {"error": "no_break", "message": "No break is running.", "break": state},
-            commit=False,
-        )
-    finished, flag = _finish(cur, active[-1], session_id=session_id, now=now, reason=reason, cfg=cfg)
-    _replace(rows, finished)
-    if flag:
-        latest = flag
+        return {"session_id": session_id, "break": state, "ended": _ended_payload(finished)}
+    expired = [row for row in rows if row.get("end_reason") == "expired"]
+    if expired:
+        finished = expired[-1]
+        state = wire_state(rows, active=None, latest_flag=latest, now=now, cfg=cfg)
+        return {"session_id": session_id, "break": state, "ended": _ended_payload(finished)}
     state = wire_state(rows, active=None, latest_flag=latest, now=now, cfg=cfg)
-    return {"session_id": session_id, "break": state, "ended": _ended_payload(finished)}
+    raise BreakError(
+        409,
+        {"error": "no_break", "message": "No break is running.", "break": state},
+        commit=False,
+    )

@@ -39,6 +39,7 @@ def step(episode, seconds, **kwargs) -> IdleDecision:
         sales_known=kwargs.pop("sales_known", True),
         last_sale_at=kwargs.pop("last_sale_at", None),
         break_active=kwargs.pop("break_active", False),
+        square_offline_active=kwargs.pop("square_offline_active", False),
         episode=episode,
         cfg=kwargs.pop("cfg", CFG),
         next_stop_name=kwargs.pop("next_stop_name", "Panama Street"),
@@ -50,12 +51,13 @@ def test_thresholds_pin_the_owners_rule():
     assert raw["no_idle"]["no_sale_move_on_s"] == 90
     assert raw["no_idle"]["off_stop_grace_s"] == 15
     assert raw["breaks"]["lunch_duration_s"] == 1800
-    assert raw["breaks"]["break_duration_s"] == 900
+    assert raw["breaks"]["break_duration_s"] == 1800
     assert raw["breaks"]["lunch_allowance"] == 1
-    assert raw["breaks"]["break_allowance"] == 2
+    assert raw["breaks"]["break_allowance"] == 1
+    assert "square_offline" not in raw
     assert no_idle_settings()["no_sale_move_on_s"] == 90
     assert break_settings()["lunch_allowance"] == 1
-    assert allowance(break_settings(), "break") == 2
+    assert allowance(break_settings(), "break") == 1
 
 
 def test_at_stop_nudge_starts_at_90s_and_escalates_to_felix():
@@ -125,6 +127,13 @@ def test_a_sale_closes_the_episode_and_restarts_the_clock():
     assert decision.nudge is None
     assert decision.open_episode["started_at"] == sale_at
     assert decision.open_episode["id"] != opened["id"]
+
+
+def test_square_offline_closes_an_open_idle_without_a_nudge():
+    opened = step(None, 0)
+    paused = step(opened.open_episode, 10, square_offline_active=True)
+    assert paused.nudge is None
+    assert paused.closed["end_reason"] == "square_offline"
 
 
 def test_moving_break_unknown_sales_and_stale_fix():
@@ -199,6 +208,7 @@ def test_break_end_rules_and_overrun_grace():
     active = {"started_at": started, "allowed_s": 1800, "break_type": "lunch"}
     assert auto_end_reason(active, T0 + timedelta(seconds=1799), fresh=True, moving=False) is None
     assert auto_end_reason(active, T0 + timedelta(seconds=1800), fresh=True, moving=False) == "expired"
+    assert auto_end_reason(active, T0 + timedelta(seconds=1800), fresh=True, moving=True) == "expired"
     assert auto_end_reason(active, T0 + timedelta(seconds=10), fresh=True, moving=True) == "moving"
     assert auto_end_reason(active, T0 + timedelta(seconds=10), fresh=False, moving=True) is None
 
@@ -213,10 +223,67 @@ def test_break_end_rules_and_overrun_grace():
         [active], active=active, latest_flag=None, now=T0 + timedelta(seconds=60), cfg=cfg,
     )
     assert state["active"] is True and state["remainingS"] == 1740
-    assert state["lunchAllowed"] == 1 and state["breakAllowed"] == 2
+    assert state["lunchAllowed"] == 1 and state["breakAllowed"] == 1
+    assert state["used"] == 1 and state["allowed"] == 1
 
 
-def test_square_sale_matches_the_driver_or_the_truck_and_not_a_longer_number():
+def test_square_cache_single_flight(monkeypatch):
+    import threading
+    import time
+    from app import scorecard
+
+    calls = {"n": 0}
+
+    def team(_token):
+        calls["n"] += 1
+        time.sleep(0.05)
+        return {"tm-1": "Amina Cole"}
+
+    monkeypatch.setattr(scorecard, "_square_token", lambda path="": "tok")
+    monkeypatch.setattr(scorecard, "_team", team)
+    monkeypatch.setattr(scorecard, "_today_payments", lambda token, day: [])
+    scorecard.clear_sale_cache()
+    errors = []
+
+    def once():
+        try:
+            scorecard._cached_today_payments(T0)
+        except Exception as exc:  # pragma: no cover - surfaced by the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=once) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+    assert errors == []
+    assert calls["n"] == 1
+
+
+def test_missing_square_table_is_logged_once(caplog):
+    import logging
+    service._square_table_missing_logged = False
+    with caplog.at_level(logging.WARNING):
+        service._note_missing_square_table()
+        service._note_missing_square_table()
+    notes = [rec for rec in caplog.records if "migration 008" in rec.message]
+    assert len(notes) == 1
+
+
+def test_square_access_token_env_beats_the_file(monkeypatch, tmp_path):
+    from app import scorecard
+
+    path = tmp_path / "softeedashboard.env"
+    path.write_text('SQUARE_TOKEN="file-token"\n')
+    monkeypatch.setenv("SQUARE_ACCESS_TOKEN", "env-token")
+    assert scorecard._square_token(str(path)) == "env-token"
+    monkeypatch.setenv("SQUARE_ACCESS_TOKEN", "   ")
+    assert scorecard._square_token(str(path)) == "file-token"
+    monkeypatch.delenv("SQUARE_ACCESS_TOKEN", raising=False)
+    assert scorecard._square_token(str(path)) == "file-token"
+
+
+def test_square_sale_matches_the_driver_or_the_truck_and_not_a_longer_number(monkeypatch):
     team = {"tm-1": "Amina Cole"}
     def payment(when, **extra):
         body = {
@@ -248,16 +315,24 @@ def test_square_sale_matches_the_driver_or_the_truck_and_not_a_longer_number():
             payment("2026-10-15T17:51:00Z", team_member_id="other", device_details={"device_name": "T17"}),
         ],
     )
-    assert other_truck == {"known": False, "last_sale_at": None}
+    assert other_truck["known"] is False
+    assert other_truck["last_sale_at"] is None
+    assert other_truck["reason"] == "no_match"
 
     none_today = last_truck_sale(
         truck_no=7, driver_name="Amina Cole", now=T0, team=team, payments=[],
     )
-    assert none_today == {"known": True, "last_sale_at": None}
+    assert none_today == {"known": True, "last_sale_at": None, "reason": "no_sale"}
     # No token in this environment: the live lookup must not invent a sale.
     from app.scorecard import clear_sale_cache
     clear_sale_cache()
-    assert last_truck_sale(truck_no=7, driver_name="Amina Cole", now=T0)["known"] is False
+    monkeypatch.delenv("SQUARE_ACCESS_TOKEN", raising=False)
+    missing = last_truck_sale(truck_no=7, driver_name="Amina Cole", now=T0)
+    assert missing["known"] is False and missing["reason"] == "no_token"
+    assert service._last_sale_wire(sale)["at"].endswith("Z")
+    assert service._last_sale_wire(sale)["reason"] is None
+    assert service._last_sale_wire(missing) == {"at": None, "reason": "no_token"}
+    assert service._last_sale_wire(none_today) == {"at": None, "reason": "no_sale"}
 
 
 def test_poll_payload_carries_nudge_and_break_without_clobbering_refuel():
