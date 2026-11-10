@@ -137,7 +137,7 @@ def _session(cur, sid):
 
 def _patch_connect(monkeypatch, database, schema):
     @contextmanager
-    def connect(schema=schema, autocommit=False):
+    def connect(schema=schema, autocommit=False, readonly=False):
         conn = psycopg2.connect(database)
         try:
             with conn.cursor() as cur:

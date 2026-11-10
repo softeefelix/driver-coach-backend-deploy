@@ -451,6 +451,7 @@ def build_route_payload(
     square_offline: object = _OMIT,
     nudge_suggestions: object = _OMIT,
     last_sale: object = _OMIT,
+    driver_scorecard: Optional[dict] = None,
     plan_source: Optional[str] = None,
     session_outcomes: Optional[dict] = None,
     remaining_stop_orders: Optional[list] = None,
@@ -500,6 +501,10 @@ def build_route_payload(
                              its own parked-with-no-sale prompt from at. This
                              server does not score idle minutes. Omitted only
                              when the caller did not evaluate it.
+      - scorecard            Hermes idle totals for this driver today:
+                             idleMinutesToday, idleMinutesWeek, fleetRank,
+                             fleetSize, cleanDayStreak, asOf. Omitted when
+                             Hermes has not posted a row or the table is missing.
       - route.remainingStopOrders
                              unfinished frozen-plan orders in master snapshot order.
                              Present on the live poll. Confirmed Done/Skip orders are
@@ -658,5 +663,7 @@ def build_route_payload(
         payload["nudgeSuggestions"] = nudge_suggestions
     if last_sale is not _OMIT:
         payload["lastSale"] = last_sale
+    if driver_scorecard:
+        payload["scorecard"] = driver_scorecard
     assert_disguise_safe(payload)
     return payload

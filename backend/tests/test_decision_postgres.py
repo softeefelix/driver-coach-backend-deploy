@@ -91,7 +91,7 @@ def test_service_poll_outcomes_reconfirm(database, schema, live, monkeypatch):
     sid = str(uuid.uuid4())
     plan = [stop(1, 'school', '11:59 PM'), stop(2)]
     @contextmanager
-    def connection(schema, autocommit=False):
+    def connection(schema, autocommit=False, readonly=False):
         conn = psycopg2.connect(database)
         try:
             with conn.cursor() as cur:

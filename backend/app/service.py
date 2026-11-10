@@ -49,11 +49,11 @@ import uuid
 from typing import Any, Optional
 
 import psycopg2
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import assignment, breaks, flagstate, geotab, jobber, liveness, no_idle, profiles, roster, routes
-from . import idle_status, nudge_suggestions, square_offline
+from . import idle_scorecard, idle_status, nudge_suggestions, office_key, square_offline
 from . import events as events_mod
 
 
@@ -104,6 +104,8 @@ app = FastAPI(title="Driver Coach v1", version="1.0.0")
 _log = logging.getLogger(__name__)
 _square_missing_lock = threading.Lock()
 _square_table_missing_logged = False
+_scorecard_missing_lock = threading.Lock()
+_scorecard_table_missing_logged = False
 
 
 def _note_missing_square_table() -> None:
@@ -116,6 +118,19 @@ def _note_missing_square_table() -> None:
     _log.warning(
         "square_offline_period is missing; apply migration 008. "
         "Route polls keep serving navigation."
+    )
+
+
+def _note_missing_scorecard_table() -> None:
+    """Log a missing 009 table once per process, not on every route poll."""
+    global _scorecard_table_missing_logged
+    with _scorecard_missing_lock:
+        if _scorecard_table_missing_logged:
+            return
+        _scorecard_table_missing_logged = True
+    _log.warning(
+        "idle_scorecard is missing; apply migration 009. "
+        "Route polls omit scorecard until it exists."
     )
 
 
@@ -810,6 +825,27 @@ def do_set_target(req: SetTargetRequest, schema: str = DEFAULT_SCHEMA) -> dict:
     return body
 
 
+def _driver_scorecard(driver_id: Optional[str], schema: str) -> Optional[dict]:
+    """Today's Hermes totals for this driver. Outside the session row lock.
+
+    Missing table or no posted row returns None so the poll omits ``scorecard``.
+    """
+    if not isinstance(driver_id, str) or not driver_id.strip():
+        return None
+    from .holds import pacific_day
+
+    day = pacific_day(no_idle.utcnow())
+    try:
+        with connect(schema=schema, readonly=True) as conn:
+            with conn.cursor() as cur:
+                found = idle_scorecard.load_today(cur, driver_id, day)
+            conn.rollback()
+        return found
+    except psycopg2.errors.UndefinedTable:
+        _note_missing_scorecard_table()
+        return None
+
+
 def _session_truck_driver(session_id: str, schema: str) -> tuple:
     """Read the session identity without taking the row lock."""
     with connect(schema=schema, autocommit=False) as conn:
@@ -848,6 +884,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
     except Exception:
         driver_name_for_events = ""
     sale = no_idle._lookup_sale(int(truck_hint), driver_name_for_events, no_idle.utcnow())
+    driver_scorecard = _driver_scorecard(driver_hint, schema)
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1016,6 +1053,7 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 square_offline=square_state,
                 nudge_suggestions=suggestions,
                 last_sale=_last_sale_wire(sale),
+                driver_scorecard=driver_scorecard,
                 geotab_adherence=adherence,
                 **_cursor_payload(frozen_plan, served_orders, skipped_orders, progress),
             )
@@ -1164,17 +1202,50 @@ def end_square_offline(req: SquareOfflineRequest) -> dict:
 
 
 @app.get("/driver-coach/v1/idle-exclusions")
-def get_idle_exclusions(day: Optional[str] = None) -> dict:
-    """Office/Hermes read. No session and no new credential.
+def get_idle_exclusions(
+    day: Optional[str] = None,
+    x_dc_office_key: Optional[str] = Header(default=None, alias=office_key.HEADER_NAME),
+) -> dict:
+    """Office/Hermes read. No driver session.
 
+    When ``DC_OFFICE_KEY`` is set, ``X-DC-Office-Key`` must match. When it is
+    unset, the read stays open so a deploy before the key exists still works.
     ``day`` is an optional Pacific YYYY-MM-DD. Omitted means today.
     """
+    office_key.require_office_read(x_dc_office_key)
     try:
         return do_idle_exclusions(day)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/driver-coach/v1/idle-scorecard")
+async def post_idle_scorecard(
+    request: Request,
+    x_dc_office_key: Optional[str] = Header(default=None, alias=office_key.HEADER_NAME),
+) -> dict:
+    """Hermes posts idle totals. Requires DC_OFFICE_KEY; 503 when that env is unset."""
+    office_key.require_office_ingest(x_dc_office_key)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail={"error": "bad_body", "message": "JSON object required"})
+    try:
+        day, as_of, rows = idle_scorecard.parse_ingest(body)
+    except idle_scorecard.ScorecardError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail)
+    try:
+        with connect(autocommit=False) as conn:
+            with conn.cursor() as cur:
+                count = idle_scorecard.upsert(cur, day, as_of, rows)
+            conn.commit()
+    except psycopg2.errors.UndefinedTable:
+        raise HTTPException(status_code=503, detail="idle scorecard storage is not migrated")
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"day": day, "upserted": count}
 
 
 @app.get("/driver-coach/v1/route")

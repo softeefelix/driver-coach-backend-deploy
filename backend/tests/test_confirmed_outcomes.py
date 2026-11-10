@@ -245,7 +245,7 @@ def cab(monkeypatch):
         }
 
     @contextmanager
-    def connect(schema="driver_coach", autocommit=False):
+    def connect(schema="driver_coach", autocommit=False, readonly=False):
         yield conn
 
     latch = {"choice": "stop:1"}
