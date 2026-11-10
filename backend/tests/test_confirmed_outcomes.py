@@ -175,6 +175,8 @@ class Cursor:
             return (self.store.plan, list(self.store.served), list(self.store.skipped))
         if "SELECT truck_no, coached, driver_id" in text:
             return (7, False, "drv")
+        if text.lstrip().startswith("SELECT truck_no, driver_id FROM driver_coach_session"):
+            return (7, "drv")
         return None
 
 

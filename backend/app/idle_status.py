@@ -33,6 +33,25 @@ def _release(cur, name: str, *, failed: bool) -> None:
         cur.execute(f"RELEASE SAVEPOINT {name}")
 
 
+def _project(row: dict, now: datetime.datetime) -> dict:
+    """Show a hold past its cap as expired without writing the row.
+
+    The stored ``ended_at`` stays null until a cab poll, start, or end closes it.
+    """
+    started = aware(row.get("started_at"))
+    allowed = int(row.get("allowed_s") or 0)
+    if started is None or row.get("ended_at") is not None or allowed <= 0:
+        return row
+    ends = started + datetime.timedelta(seconds=allowed)
+    if aware(now) < ends:
+        return row
+    shown = dict(row)
+    shown["ended_at"] = ends
+    shown["end_reason"] = "expired"
+    shown["duration_s"] = allowed
+    return shown
+
+
 def _history_row(kind: str, row: dict) -> dict:
     reason = row.get("end_reason")
     started = aware(row.get("started_at"))
@@ -159,8 +178,12 @@ def collect(cur, day: str, now: datetime.datetime) -> dict:
             "end_reason": row[7],
         }
 
-    break_rows = [break_dict(row) for row in breaks if _overlaps(row[4], row[5], start, end)]
-    square_rows = [square_dict(row) for row in squares if _overlaps(row[3], row[4], start, end)]
+    break_rows = [
+        _project(break_dict(row), now) for row in breaks if _overlaps(row[4], row[5], start, end)
+    ]
+    square_rows = [
+        _project(square_dict(row), now) for row in squares if _overlaps(row[3], row[4], start, end)
+    ]
     history = [_history_row("break", row) for row in break_rows]
     history.extend(_history_row("square_offline", row) for row in square_rows)
     history.sort(key=lambda row: (row["startedAt"] or "", row["kind"], row["id"] or ""))

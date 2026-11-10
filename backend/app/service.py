@@ -44,6 +44,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import threading
 import uuid
 from typing import Any, Optional
 
@@ -101,6 +102,21 @@ from .refuel import RefuelNightBook, Reminder
 
 app = FastAPI(title="Driver Coach v1", version="1.0.0")
 _log = logging.getLogger(__name__)
+_square_missing_lock = threading.Lock()
+_square_table_missing_logged = False
+
+
+def _note_missing_square_table() -> None:
+    """Log a missing 008 table once per process, not on every route poll."""
+    global _square_table_missing_logged
+    with _square_missing_lock:
+        if _square_table_missing_logged:
+            return
+        _square_table_missing_logged = True
+    _log.warning(
+        "square_offline_period is missing; apply migration 008. "
+        "Route polls keep serving navigation."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -542,10 +558,11 @@ def do_start_break(req: BreakStartRequest, schema: str = DEFAULT_SCHEMA) -> dict
 
 
 def do_end_break(req: BreakEndRequest, schema: str = DEFAULT_SCHEMA) -> dict:
+    now = no_idle.utcnow()
     with connect(schema=schema, autocommit=False) as conn:
         try:
             with conn.cursor() as cur:
-                payload = breaks.end(cur, session_id=req.session_id)
+                payload = breaks.end(cur, session_id=req.session_id, now=now)
             conn.commit()
             return payload
         except breaks.BreakError as exc:
@@ -577,37 +594,21 @@ def do_end_square_offline(req: SquareOfflineRequest, schema: str = DEFAULT_SCHEM
 
 
 def do_idle_exclusions(day: Optional[str] = None, schema: str = DEFAULT_SCHEMA) -> dict:
-    """Hermes read. No driver session.
+    """Hermes read. No driver session and no writes.
 
     Same access as GET /roster: the service has no office credential, so this
-    is an unauthenticated read. It does close overdue break and Square rows at
-    their caps so the history shows expired rather than a still-open hold.
-    It does not create a session or write a stop outcome.
+    is an unauthenticated read. A hold past its cap is shown as expired from
+    the clock. The stored row is left unchanged; the cab poll, start, and end
+    paths close it. This does not create a session or write a stop outcome.
     """
     from .holds import pacific_day, parse_day
 
     now = no_idle.utcnow()
     day_value = pacific_day(now) if day is None else parse_day(day)
-    with connect(schema=schema, autocommit=False) as conn:
+    with connect(schema=schema, readonly=True) as conn:
         with conn.cursor() as cur:
-            wrote = False
-            cur.execute("SAVEPOINT idle_expire_breaks")
-            try:
-                wrote = breaks.expire_overdue(cur, now) or wrote
-                cur.execute("RELEASE SAVEPOINT idle_expire_breaks")
-            except psycopg2.errors.UndefinedTable:
-                cur.execute("ROLLBACK TO SAVEPOINT idle_expire_breaks")
-            cur.execute("SAVEPOINT idle_expire_square")
-            try:
-                wrote = square_offline.expire_overdue(cur, now) or wrote
-                cur.execute("RELEASE SAVEPOINT idle_expire_square")
-            except psycopg2.errors.UndefinedTable:
-                cur.execute("ROLLBACK TO SAVEPOINT idle_expire_square")
             body = idle_status.collect(cur, day_value, now)
-        if wrote:
-            conn.commit()
-        else:
-            conn.rollback()
+        conn.rollback()
     return body
 
 
@@ -809,6 +810,21 @@ def do_set_target(req: SetTargetRequest, schema: str = DEFAULT_SCHEMA) -> dict:
     return body
 
 
+def _session_truck_driver(session_id: str, schema: str) -> tuple:
+    """Read the session identity without taking the row lock."""
+    with connect(schema=schema, autocommit=False) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT truck_no, driver_id FROM driver_coach_session WHERE session_id = %s",
+                (session_id,),
+            )
+            row = cur.fetchone()
+        conn.rollback()
+    if row is None:
+        raise KeyError(f"unknown session_id: {session_id}")
+    return row[0], row[1]
+
+
 def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
     """The live route state for a session (the ~15-20s poll).
 
@@ -823,6 +839,15 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
     read-only office view; that object does not move the cab cursor.
     """
     wrote_shift = False
+    # Square is a network call. Resolve it before the session row lock so a
+    # slow payment lookup cannot block other writers on this session.
+    truck_hint, driver_hint = _session_truck_driver(session_id, schema)
+    driver_name_for_events = ""
+    try:
+        driver_name_for_events = jobber.name_from_driver_id(driver_hint) or ""
+    except Exception:
+        driver_name_for_events = ""
+    sale = no_idle._lookup_sale(int(truck_hint), driver_name_for_events, no_idle.utcnow())
     with connect(schema=schema, autocommit=False) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -851,11 +876,6 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             # locked "-> [] (panel hidden)" contract) and never raises; the try/except is
             # belt-and-braces so a Jobber hiccup never crashes the poll. A crash here is a
             # failure -> [] (clear the panel per the contract), never None.
-            driver_name_for_events = ""
-            try:
-                driver_name_for_events = jobber.name_from_driver_id(driver_id) or ""
-            except Exception:
-                driver_name_for_events = ""
             today_events, advise_events, events_status = _todays_bookings(driver_name_for_events)
             from .decision_store import load as load_progress
             # A database that has not applied the chooser table still serves the
@@ -903,7 +923,6 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             break_state = breaks.inactive_state()
             square_state = square_offline.inactive_state()
             suggestions: list = []
-            sale = no_idle._lookup_sale(int(truck_no), driver_name_for_events, no_idle.utcnow())
             # A missing migration must not take down navigation. Roll back only this
             # savepoint; the route snapshot above still commits with the session.
             cur.execute("SAVEPOINT driver_coach_no_idle")
@@ -924,6 +943,11 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                         cur, session_id=session_id, driver_id=driver_id,
                     )
                     cur.execute("RELEASE SAVEPOINT driver_coach_square_offline")
+                except psycopg2.errors.UndefinedTable:
+                    _note_missing_square_table()
+                    cur.execute("ROLLBACK TO SAVEPOINT driver_coach_square_offline")
+                    square_state = square_offline.inactive_state()
+                    square_wrote = False
                 except psycopg2.Error:
                     _log.exception("square offline reconcile skipped")
                     cur.execute("ROLLBACK TO SAVEPOINT driver_coach_square_offline")

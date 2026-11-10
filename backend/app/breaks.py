@@ -421,6 +421,15 @@ def start(cur, *, session_id: str, break_type: str, now: Optional[datetime.datet
             commit=False,
         )
     truck_no, driver_id = _lock_session(cur, session_id)
+    if not isinstance(driver_id, str) or not driver_id.strip():
+        raise BreakError(
+            409,
+            {
+                "error": "no_driver",
+                "message": "A driver is required to start a break.",
+            },
+            commit=False,
+        )
     _lock_driver(cur, driver_id, session_id)
     expire_overdue(cur, now, driver_id=driver_id, session_id=session_id)
     rows = load_breaks(cur, session_id, driver_id, now)
@@ -493,20 +502,27 @@ def end(cur, *, session_id: str, now: Optional[datetime.datetime] = None, reason
     cfg = cfg or load_config()
     _truck, driver_id = _lock_session(cur, session_id)
     _lock_driver(cur, driver_id, session_id)
-    expire_overdue(cur, now, driver_id=driver_id, session_id=session_id)
     rows = load_breaks(cur, session_id, driver_id, now)
     latest = load_latest_flag(cur, session_id)
     active = _open_rows(rows)
-    if not active:
+    if active:
+        current = active[-1]
+        cap = aware(current["started_at"]) + datetime.timedelta(seconds=int(current["allowed_s"]))
+        close_as = "expired" if aware(now) >= cap else reason
+        finished, flag = _finish(cur, current, session_id=session_id, now=now, reason=close_as, cfg=cfg)
+        _replace(rows, finished)
+        if flag:
+            latest = flag
         state = wire_state(rows, active=None, latest_flag=latest, now=now, cfg=cfg)
-        raise BreakError(
-            409,
-            {"error": "no_break", "message": "No break is running.", "break": state},
-            commit=False,
-        )
-    finished, flag = _finish(cur, active[-1], session_id=session_id, now=now, reason=reason, cfg=cfg)
-    _replace(rows, finished)
-    if flag:
-        latest = flag
+        return {"session_id": session_id, "break": state, "ended": _ended_payload(finished)}
+    expired = [row for row in rows if row.get("end_reason") == "expired"]
+    if expired:
+        finished = expired[-1]
+        state = wire_state(rows, active=None, latest_flag=latest, now=now, cfg=cfg)
+        return {"session_id": session_id, "break": state, "ended": _ended_payload(finished)}
     state = wire_state(rows, active=None, latest_flag=latest, now=now, cfg=cfg)
-    return {"session_id": session_id, "break": state, "ended": _ended_payload(finished)}
+    raise BreakError(
+        409,
+        {"error": "no_break", "message": "No break is running.", "break": state},
+        commit=False,
+    )

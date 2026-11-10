@@ -161,6 +161,23 @@ def _ended_payload(row: dict) -> dict:
     }
 
 
+def _finish_expired(cur, row: dict) -> dict:
+    ended_at = aware(row["started_at"]) + datetime.timedelta(seconds=int(row["allowed_s"]))
+    cur.execute(
+        """
+        UPDATE square_offline_period
+           SET ended_at = %s, duration_s = %s, end_reason = 'expired'
+         WHERE id = %s AND ended_at IS NULL
+        """,
+        (ended_at, int(row["allowed_s"]), row["id"]),
+    )
+    updated = dict(row)
+    updated["ended_at"] = ended_at
+    updated["duration_s"] = int(row["allowed_s"])
+    updated["end_reason"] = "expired"
+    return updated
+
+
 def _finish_driver(cur, row: dict, now: datetime.datetime) -> dict:
     cur.execute(
         """
@@ -237,22 +254,31 @@ def end(cur, *, session_id: str, now: Optional[datetime.datetime] = None) -> dic
     now = aware(now or datetime.datetime.now(datetime.timezone.utc))
     _truck, driver_id = _lock_session(cur, session_id)
     _lock_driver(cur, driver_id, session_id)
-    expire_overdue(cur, now, driver_id=driver_id, session_id=session_id)
     rows = load_rows(cur, session_id=session_id, driver_id=driver_id, now=now)
     active = _open_rows(rows)
-    if not active:
-        state = wire_state(rows, active=None, now=now)
-        raise SquareOfflineError(
-            409,
-            {"error": "no_square_offline", "message": "Square is not marked offline.", "squareOffline": state},
-        )
-    finished = _finish_driver(cur, active[-1], now)
-    for index, row in enumerate(rows):
-        if row["id"] == finished["id"]:
-            rows[index] = finished
-            break
-    return {
-        "session_id": session_id,
-        "squareOffline": wire_state(rows, active=None, now=now),
-        "ended": _ended_payload(finished),
-    }
+    if active:
+        current = active[-1]
+        cap = aware(current["started_at"]) + datetime.timedelta(seconds=int(current["allowed_s"]))
+        finished = _finish_expired(cur, current) if aware(now) >= cap else _finish_driver(cur, current, now)
+        for index, row in enumerate(rows):
+            if row["id"] == finished["id"]:
+                rows[index] = finished
+                break
+        return {
+            "session_id": session_id,
+            "squareOffline": wire_state(rows, active=None, now=now),
+            "ended": _ended_payload(finished),
+        }
+    expired = [row for row in rows if row.get("end_reason") == "expired"]
+    if expired:
+        finished = expired[-1]
+        return {
+            "session_id": session_id,
+            "squareOffline": wire_state(rows, active=None, now=now),
+            "ended": _ended_payload(finished),
+        }
+    state = wire_state(rows, active=None, now=now)
+    raise SquareOfflineError(
+        409,
+        {"error": "no_square_offline", "message": "Square is not marked offline.", "squareOffline": state},
+    )

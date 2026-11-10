@@ -227,6 +227,49 @@ def test_break_end_rules_and_overrun_grace():
     assert state["used"] == 1 and state["allowed"] == 1
 
 
+def test_square_cache_single_flight(monkeypatch):
+    import threading
+    import time
+    from app import scorecard
+
+    calls = {"n": 0}
+
+    def team(_token):
+        calls["n"] += 1
+        time.sleep(0.05)
+        return {"tm-1": "Amina Cole"}
+
+    monkeypatch.setattr(scorecard, "_square_token", lambda path="": "tok")
+    monkeypatch.setattr(scorecard, "_team", team)
+    monkeypatch.setattr(scorecard, "_today_payments", lambda token, day: [])
+    scorecard.clear_sale_cache()
+    errors = []
+
+    def once():
+        try:
+            scorecard._cached_today_payments(T0)
+        except Exception as exc:  # pragma: no cover - surfaced by the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=once) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+    assert errors == []
+    assert calls["n"] == 1
+
+
+def test_missing_square_table_is_logged_once(caplog):
+    import logging
+    service._square_table_missing_logged = False
+    with caplog.at_level(logging.WARNING):
+        service._note_missing_square_table()
+        service._note_missing_square_table()
+    notes = [rec for rec in caplog.records if "migration 008" in rec.message]
+    assert len(notes) == 1
+
+
 def test_square_access_token_env_beats_the_file(monkeypatch, tmp_path):
     from app import scorecard
 

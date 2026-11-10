@@ -56,18 +56,23 @@ def assert_safe_schema(schema: str) -> str:
 
 
 @contextmanager
-def connect(schema: str = DEFAULT_SCHEMA, autocommit: bool = False):
+def connect(schema: str = DEFAULT_SCHEMA, autocommit: bool = False, *, readonly: bool = False):
     """Yield a psycopg2 connection with search_path pinned to `schema`.
 
     `public` is appended to search_path READ-ONLY-style for resolving PostGIS's
     `geography`/`geometry` types and reading the shared driver-performance tables,
     but every UNQUALIFIED write resolves to `schema` (first entry) so DDL/inserts
     land in the isolated schema, never public.
+
+    ``readonly=True`` makes the transaction reject writes. Office reads use it.
     """
     assert_safe_schema(schema)
     conn = psycopg2.connect(load_database_url(), connect_timeout=20)
     try:
-        conn.autocommit = autocommit
+        if readonly:
+            conn.set_session(readonly=True, autocommit=False)
+        else:
+            conn.autocommit = autocommit
         with conn.cursor() as cur:
             # schema first (writes land here); public last (read shared tables + PostGIS types)
             cur.execute(f'SET search_path TO "{schema}", public')

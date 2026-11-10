@@ -195,6 +195,7 @@ def _today_payments(token: str, day: dt.date) -> Optional[list[dict]]:
 
 _sale_lock = threading.Lock()
 _sale_cache: dict[str, tuple[float, Optional[list], Optional[dict]]] = {}
+_sale_inflight: dict[str, threading.Event] = {}
 _SALE_TTL_S = 15.0
 _SALE_FAIL_TTL_S = 10.0
 
@@ -202,6 +203,7 @@ _SALE_FAIL_TTL_S = 10.0
 def clear_sale_cache() -> None:
     with _sale_lock:
         _sale_cache.clear()
+        _sale_inflight.clear()
 
 
 def _payment_counts(payment: dict) -> bool:
@@ -238,23 +240,42 @@ def _mentions_truck(payment: dict, truck_no: int) -> bool:
 
 
 def _cached_today_payments(now: dt.datetime) -> tuple[Optional[list], Optional[dict]]:
-    """Today's Square payments and team directory, shared across the ~20s polls."""
+    """Today's Square payments and team directory, shared across the ~20s polls.
+
+    Overlapping cache misses for the same day make one Square call. The others wait.
+    """
     day = now.astimezone(PACIFIC).date()
     key = day.isoformat()
-    with _sale_lock:
-        hit = _sale_cache.get(key)
-        if hit is not None and hit[0] > time.monotonic():
-            return hit[1], hit[2]
-    token = _square_token()
-    if not token:
+    while True:
         with _sale_lock:
-            _sale_cache[key] = (time.monotonic() + _SALE_FAIL_TTL_S, None, None)
-        return None, None
-    team, payments = _team(token), _today_payments(token, day)
-    ttl = _SALE_TTL_S if team is not None and payments is not None else _SALE_FAIL_TTL_S
-    with _sale_lock:
-        _sale_cache[key] = (time.monotonic() + ttl, payments, team)
-    return payments, team
+            hit = _sale_cache.get(key)
+            if hit is not None and hit[0] > time.monotonic():
+                return hit[1], hit[2]
+            waiting = _sale_inflight.get(key)
+            if waiting is None:
+                waiting = threading.Event()
+                _sale_inflight[key] = waiting
+                leader = True
+            else:
+                leader = False
+        if not leader:
+            waiting.wait(timeout=30)
+            continue
+        try:
+            token = _square_token()
+            if not token:
+                payments, team = None, None
+                ttl = _SALE_FAIL_TTL_S
+            else:
+                team, payments = _team(token), _today_payments(token, day)
+                ttl = _SALE_TTL_S if team is not None and payments is not None else _SALE_FAIL_TTL_S
+            with _sale_lock:
+                _sale_cache[key] = (time.monotonic() + ttl, payments, team)
+            return payments, team
+        finally:
+            with _sale_lock:
+                _sale_inflight.pop(key, None)
+            waiting.set()
 
 
 def last_truck_sale(

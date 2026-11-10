@@ -150,7 +150,7 @@ While a break is active the server suppresses idle nudges. The break ends when a
 - the allotment is over on a poll (`endsAt`)
 - a fresh fix shows speed at or above `moving_speed_mph` (6)
 
-A stale fix does not end a break. The server closes the break at `endsAt` even if the cab never calls end and even if no route poll arrives: the stored end is the cap (`endReason` `expired`), not the later time someone noticed. A second start the same Pacific day is refused, logged, and returned as `latestFlag.kind` `over_limit`. Movement before the cap still ends it early (`endReason` `moving`).
+A stale fix does not end a break. The office read does not write: a hold past `endsAt` is shown as expired from the clock, and the stored row stays open until a cab poll, start, or end closes it. That stored end is the cap (`endReason` `expired`). Ending a hold that is already past the cap returns 200 with that expired row. A second start the same Pacific day is refused, logged, and returned as `latestFlag.kind` `over_limit`. Movement before the cap still ends it early (`endReason` `moving`). A session with no driver id is `409` `no_driver`.
 
 ## `POST /driver-coach/v1/break/start`
 
@@ -299,7 +299,7 @@ End response adds `ended`: `{ "id", "reason", "endReason", "expired", "startedAt
 
 `GET /driver-coach/v1/idle-exclusions` needs no driver session. It uses the same access as `GET /driver-coach/v1/roster`: this service has no office credential. Optional query `day=YYYY-MM-DD` (Pacific). Omitted means today. Hermes correlates a truck by `truckNo`, `driverId`, and `day`. The response has no `sessionId` and no `session_id`. A session id authorizes driver writes.
 
-The read closes overdue breaks and Square periods at their caps so history shows `expired`. It does not create a session or write a stop outcome.
+The read is a read-only transaction. It does not update or commit. A hold past `started_at` + `allowedS` is shown with `active` false, and in `history` with `endedAt` equal to `endsAt`, `endReason` `expired`, `expired` true, and `durationS` equal to `allowedS`, even when the stored row is still open. The cab poll, start, and end paths close the row. The read does not create a session or write a stop outcome.
 
 ```json
 {

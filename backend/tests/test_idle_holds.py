@@ -4,6 +4,7 @@ Disposable Postgres only. No fleet database and no live session writes.
 """
 import json
 import os
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -84,9 +85,11 @@ def _connect(database, schema):
 
 def _patch_connect(monkeypatch, database, schema):
     @contextmanager
-    def connect(schema=schema, autocommit=False):
+    def connect(schema=schema, autocommit=False, readonly=False):
         conn = psycopg2.connect(database)
         try:
+            if readonly:
+                conn.set_session(readonly=True, autocommit=False)
             with conn.cursor() as cur:
                 cur.execute(f'SET search_path TO "{schema}", public')
             yield conn
@@ -174,7 +177,23 @@ def test_break_expires_without_a_client_and_square_periods_are_all_logged(databa
     assert started["break"]["endsAt"].endswith("Z")
 
     clock["now"] = T0 + timedelta(minutes=40)
+    with _connect(database, schema) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT ended_at, end_reason, duration_s FROM shift_break WHERE driver_id=%s",
+                ("amina_cole",),
+            )
+            stored_before = cur.fetchall()
     office = service.do_idle_exclusions(schema=schema)
+    with _connect(database, schema) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT ended_at, end_reason, duration_s FROM shift_break WHERE driver_id=%s",
+                ("amina_cole",),
+            )
+            stored_after = cur.fetchall()
+    assert stored_before == stored_after
+    assert stored_after == [(None, None, None)]
     assert office["day"] == "2026-10-15"
     assert office["timezone"] == "America/Los_Angeles"
     assert office["breakDurationS"] == 1800
@@ -240,6 +259,96 @@ def _assert_no_session_key(payload) -> None:
     elif isinstance(payload, list):
         for item in payload:
             _assert_no_session_key(item)
+
+
+def test_end_after_the_cap_returns_the_expired_hold(database, schema, monkeypatch):
+    _patch_connect(monkeypatch, database, schema)
+    clock = {"now": T0}
+    monkeypatch.setattr(service.no_idle, "utcnow", lambda: clock["now"])
+    sid = str(uuid.uuid4())
+    with _connect(database, schema) as conn:
+        with conn.cursor() as cur:
+            _session(cur, sid, driver="late_ender")
+        conn.commit()
+    service.do_start_break(service.BreakStartRequest(session_id=sid, type="break"))
+    clock["now"] = T0 + timedelta(minutes=40)
+    ended = service.do_end_break(service.BreakEndRequest(session_id=sid))
+    assert ended["ended"]["endReason"] == "expired"
+    assert ended["ended"]["expired"] is True
+    assert ended["ended"]["durationS"] == 1800
+    again = service.do_end_break(service.BreakEndRequest(session_id=sid))
+    assert again["ended"]["endReason"] == "expired"
+    assert again["break"]["active"] is False
+
+
+def test_break_requires_a_driver(database, schema, monkeypatch):
+    _patch_connect(monkeypatch, database, schema)
+    sid = str(uuid.uuid4())
+    with _connect(database, schema) as conn:
+        with conn.cursor() as cur:
+            _session(cur, sid, driver=None)
+        conn.commit()
+    with pytest.raises(breaks.BreakError) as missing:
+        service.do_start_break(service.BreakStartRequest(session_id=sid, type="break"))
+    assert missing.value.status == 409
+    assert missing.value.detail["error"] == "no_driver"
+
+
+def test_concurrent_starts_allow_one_break(database, schema, monkeypatch):
+    _patch_connect(monkeypatch, database, schema)
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    with _connect(database, schema) as conn:
+        with conn.cursor() as cur:
+            _session(cur, first, driver="racer", truck=11)
+            _session(cur, second, driver="racer", truck=12)
+        conn.commit()
+    barrier = threading.Barrier(2)
+    outcome = []
+    guard = threading.Lock()
+
+    def attempt(sid):
+        barrier.wait(timeout=5)
+        try:
+            service.do_start_break(service.BreakStartRequest(session_id=sid, type="break"))
+            result = "ok"
+        except breaks.BreakError as exc:
+            result = exc.detail["error"]
+        with guard:
+            outcome.append(result)
+
+    threads = [threading.Thread(target=attempt, args=(sid,)) for sid in (first, second)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    assert outcome.count("ok") == 1
+    assert outcome.count("break_active") + outcome.count("over_limit") == 1
+    with _connect(database, schema) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM shift_break WHERE driver_id=%s", ("racer",))
+            assert cur.fetchone()[0] == 1
+
+
+def test_break_allowance_resets_at_pacific_midnight(database, schema, monkeypatch):
+    _patch_connect(monkeypatch, database, schema)
+    clock = {"now": datetime(2026, 11, 10, 23, 59, tzinfo=holds.PACIFIC)}
+    monkeypatch.setattr(service.no_idle, "utcnow", lambda: clock["now"])
+    sid = str(uuid.uuid4())
+    with _connect(database, schema) as conn:
+        with conn.cursor() as cur:
+            _session(cur, sid, driver="midnight", started=clock["now"])
+        conn.commit()
+    service.do_start_break(service.BreakStartRequest(session_id=sid, type="break"))
+    service.do_end_break(service.BreakEndRequest(session_id=sid))
+    with pytest.raises(breaks.BreakError) as same_night:
+        service.do_start_break(service.BreakStartRequest(session_id=sid, type="break"))
+    assert same_night.value.detail["error"] == "over_limit"
+    clock["now"] = datetime(2026, 11, 11, 0, 1, tzinfo=holds.PACIFIC)
+    nxt = service.do_start_break(service.BreakStartRequest(session_id=sid, type="break"))
+    assert nxt["break"]["active"] is True
+    assert nxt["break"]["day"] == "2026-11-11"
+    assert nxt["break"]["used"] == 1
 
 
 def test_idle_status_empty_day_shape():
