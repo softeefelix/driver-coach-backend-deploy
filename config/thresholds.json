@@ -29,9 +29,13 @@
   },
   "breaks": {
     "lunch_duration_s": 1800,
-    "break_duration_s": 900,
+    "break_duration_s": 1800,
     "lunch_allowance": 1,
-    "break_allowance": 2,
+    "break_allowance": 1,
+    "breaks_per_driver_day": 1,
     "overrun_grace_s": 60
+  },
+  "square_offline": {
+    "max_s": 3600
   }
 }

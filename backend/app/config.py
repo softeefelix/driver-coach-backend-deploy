@@ -106,17 +106,20 @@ def no_idle_settings() -> dict:
 
 
 def break_settings() -> dict:
-    """Per-shift lunch/break allowances from thresholds.json.
+    """Break caps. Duration and the daily allowance are code constants.
 
-    One 30-minute lunch and two 15-minute breaks. ``overrun_grace_s`` is how far
-    past the allotment a break may run (poll lag) before it is flagged.
+    ``thresholds.json`` mirrors those numbers for the shared client file.
+    ``overrun_grace_s`` still comes from that file and only applies when a
+    break ends early for movement, not when the server expires it at the cap.
     """
+    from .holds import BREAK_DURATION_S, BREAKS_PER_DRIVER_DAY
+
     raw = load_thresholds().get("breaks") or {}
     return {
-        "lunch_duration_s": _whole(raw, "lunch_duration_s", 1800, minimum=1),
-        "break_duration_s": _whole(raw, "break_duration_s", 900, minimum=1),
-        "lunch_allowance": _whole(raw, "lunch_allowance", 1, minimum=0),
-        "break_allowance": _whole(raw, "break_allowance", 2, minimum=0),
+        "lunch_duration_s": BREAK_DURATION_S,
+        "break_duration_s": BREAK_DURATION_S,
+        "lunch_allowance": BREAKS_PER_DRIVER_DAY,
+        "break_allowance": BREAKS_PER_DRIVER_DAY,
         "overrun_grace_s": _whole(raw, "overrun_grace_s", 60, minimum=0),
     }
 

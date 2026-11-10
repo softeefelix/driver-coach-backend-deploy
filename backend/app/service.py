@@ -8,8 +8,11 @@ seams + the production-ization roster/route feeds:
   GET  /driver-coach/v1/route      the LIVE route snapshot the app polls to follow
                                    the truck's real progress (nextStop + live phase).
                                    Also carries no-idle `nudge` and `break` state.
-  POST /driver-coach/v1/break/start   start a lunch or break for this session
-  POST /driver-coach/v1/break/end     end the active lunch or break
+  POST /driver-coach/v1/break/start   start the one daily 30-minute break
+  POST /driver-coach/v1/break/end     end that break early
+  POST /driver-coach/v1/square-offline/start   mark Square offline (60-minute cap)
+  POST /driver-coach/v1/square-offline/end     end that mark early
+  GET  /driver-coach/v1/idle-exclusions        office read for Hermes, no driver session
 
 signin: {name, truck} -> Jobber driver-of-record -> REAL driver_profiles snapshot
 -> resolve_flags() (frozen for the session) -> disguise-safe payload (no boolean on
@@ -40,6 +43,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import uuid
 from typing import Any, Optional
 
@@ -48,6 +52,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import assignment, breaks, flagstate, geotab, jobber, liveness, no_idle, profiles, roster, routes
+from . import idle_status, nudge_suggestions, square_offline
 from . import events as events_mod
 
 
@@ -95,6 +100,7 @@ from .refcore import DRIVING
 from .refuel import RefuelNightBook, Reminder
 
 app = FastAPI(title="Driver Coach v1", version="1.0.0")
+_log = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -174,6 +180,10 @@ class BreakStartRequest(BaseModel):
 
 
 class BreakEndRequest(BaseModel):
+    session_id: str
+
+
+class SquareOfflineRequest(BaseModel):
     session_id: str
 
 
@@ -530,6 +540,61 @@ def do_end_break(req: BreakEndRequest, schema: str = DEFAULT_SCHEMA) -> dict:
             raise
 
 
+def do_start_square_offline(req: SquareOfflineRequest, schema: str = DEFAULT_SCHEMA) -> dict:
+    """Mark Square offline and close any open idle episode for this session."""
+    now = no_idle.utcnow()
+    with connect(schema=schema, autocommit=False) as conn:
+        with conn.cursor() as cur:
+            payload = square_offline.start(cur, session_id=req.session_id, now=now)
+            no_idle.close_open(cur, req.session_id, now=now, reason="square_offline")
+        conn.commit()
+        return payload
+
+
+def do_end_square_offline(req: SquareOfflineRequest, schema: str = DEFAULT_SCHEMA) -> dict:
+    now = no_idle.utcnow()
+    with connect(schema=schema, autocommit=False) as conn:
+        with conn.cursor() as cur:
+            payload = square_offline.end(cur, session_id=req.session_id, now=now)
+        conn.commit()
+        return payload
+
+
+def do_idle_exclusions(day: Optional[str] = None, schema: str = DEFAULT_SCHEMA) -> dict:
+    """Hermes read. No driver session.
+
+    Same access as GET /roster: the service has no office credential, so this
+    is an unauthenticated read. It does close overdue break and Square rows at
+    their caps so the history shows expired rather than a still-open hold.
+    It does not create a session or write a stop outcome.
+    """
+    from .holds import pacific_day, parse_day
+
+    now = no_idle.utcnow()
+    day_value = pacific_day(now) if day is None else parse_day(day)
+    with connect(schema=schema, autocommit=False) as conn:
+        with conn.cursor() as cur:
+            wrote = False
+            cur.execute("SAVEPOINT idle_expire_breaks")
+            try:
+                wrote = breaks.expire_overdue(cur, now) or wrote
+                cur.execute("RELEASE SAVEPOINT idle_expire_breaks")
+            except psycopg2.errors.UndefinedTable:
+                cur.execute("ROLLBACK TO SAVEPOINT idle_expire_breaks")
+            cur.execute("SAVEPOINT idle_expire_square")
+            try:
+                wrote = square_offline.expire_overdue(cur, now) or wrote
+                cur.execute("RELEASE SAVEPOINT idle_expire_square")
+            except psycopg2.errors.UndefinedTable:
+                cur.execute("ROLLBACK TO SAVEPOINT idle_expire_square")
+            body = idle_status.collect(cur, day_value, now)
+        if wrote:
+            conn.commit()
+        else:
+            conn.rollback()
+    return body
+
+
 def session_outcome_snapshot(served_orders, skipped_orders) -> dict:
     """The session's stored stop-order arrays, without inventing who wrote each one.
 
@@ -820,6 +885,8 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
             )
             nudge = None
             break_state = breaks.inactive_state()
+            square_state = square_offline.inactive_state()
+            suggestions: list = []
             # A missing migration must not take down navigation. Roll back only this
             # savepoint; the route snapshot above still commits with the session.
             cur.execute("SAVEPOINT driver_coach_no_idle")
@@ -832,6 +899,23 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                     fresh=view.fresh,
                     moving=view.moving,
                 )
+                square_state = square_offline.inactive_state()
+                square_wrote = False
+                cur.execute("SAVEPOINT driver_coach_square_offline")
+                try:
+                    square_state, square_wrote = square_offline.reconcile_on_poll(
+                        cur, session_id=session_id, driver_id=driver_id,
+                    )
+                    cur.execute("RELEASE SAVEPOINT driver_coach_square_offline")
+                except psycopg2.Error:
+                    _log.exception("square offline reconcile skipped")
+                    cur.execute("ROLLBACK TO SAVEPOINT driver_coach_square_offline")
+                    square_state = square_offline.inactive_state()
+                    square_wrote = False
+                except Exception:
+                    cur.execute("ROLLBACK TO SAVEPOINT driver_coach_square_offline")
+                    square_state = square_offline.inactive_state()
+                    square_wrote = False
                 nudge, idle_wrote = no_idle.reconcile_on_poll(
                     cur,
                     session_id=session_id,
@@ -840,14 +924,30 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                     driver_name=driver_name_for_events,
                     view=view,
                     break_active=bool(break_state.get("active")),
+                    square_offline_active=bool(square_state.get("active")),
                     next_stop_name=_next_stop_label(live.get("next_stop") if isinstance(live, dict) else None),
                 )
-                wrote_shift = bool(break_wrote or idle_wrote)
+                target = progress.get("targetOrder") if isinstance(progress, dict) else None
+                if isinstance(target, bool) or not isinstance(target, int):
+                    target = None
+                suggestions = nudge_suggestions.for_poll(
+                    cur,
+                    session_id=session_id,
+                    route_cluster_id=route_cluster_id,
+                    frozen_plan=frozen_plan,
+                    served_orders=served_orders,
+                    skipped_orders=skipped_orders,
+                    current_order=target,
+                    now=no_idle.utcnow(),
+                )
+                wrote_shift = bool(break_wrote or square_wrote or idle_wrote)
                 cur.execute("RELEASE SAVEPOINT driver_coach_no_idle")
             except psycopg2.errors.UndefinedTable:
                 cur.execute("ROLLBACK TO SAVEPOINT driver_coach_no_idle")
                 nudge = None
                 break_state = breaks.inactive_state()
+                square_state = square_offline.inactive_state()
+                suggestions = []
                 wrote_shift = False
             payload = build_route_payload(
                 next_stop=live["next_stop"],
@@ -871,6 +971,8 @@ def do_route(session_id: str, schema: str = DEFAULT_SCHEMA) -> dict:
                 refuel_reminder=refuel_reminder_for_route_poll(truck_no),
                 nudge=nudge,
                 break_state=break_state,
+                square_offline=square_state,
+                nudge_suggestions=suggestions,
                 geotab_adherence=adherence,
                 **_cursor_payload(frozen_plan, served_orders, skipped_orders, progress),
             )
@@ -986,6 +1088,48 @@ def end_break(req: BreakEndRequest) -> dict:
         raise HTTPException(status_code=404, detail=str(e))
     except breaks.BreakError as e:
         raise HTTPException(status_code=e.status, detail=e.detail)
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/driver-coach/v1/square-offline/start")
+def start_square_offline(req: SquareOfflineRequest) -> dict:
+    try:
+        return do_start_square_offline(req)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except square_offline.SquareOfflineError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    except psycopg2.errors.UndefinedTable:
+        raise HTTPException(status_code=503, detail="square offline storage is not migrated")
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/driver-coach/v1/square-offline/end")
+def end_square_offline(req: SquareOfflineRequest) -> dict:
+    try:
+        return do_end_square_offline(req)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except square_offline.SquareOfflineError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    except psycopg2.errors.UndefinedTable:
+        raise HTTPException(status_code=503, detail="square offline storage is not migrated")
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/driver-coach/v1/idle-exclusions")
+def get_idle_exclusions(day: Optional[str] = None) -> dict:
+    """Office/Hermes read. No session and no new credential.
+
+    ``day`` is an optional Pacific YYYY-MM-DD. Omitted means today.
+    """
+    try:
+        return do_idle_exclusions(day)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(e))
 

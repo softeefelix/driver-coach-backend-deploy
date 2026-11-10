@@ -335,6 +335,7 @@ def decide_idle(
     episode: Optional[dict],
     cfg: NoIdleConfig,
     next_stop_name: Optional[str] = None,
+    square_offline_active: bool = False,
 ) -> IdleDecision:
     """Pure poll step. ``episode`` is the open row, or None.
 
@@ -347,10 +348,11 @@ def decide_idle(
         last_sale_at = now
     episode = _copy_episode(episode) if episode else None
 
-    if break_active:
+    if break_active or square_offline_active:
         if episode is None:
             return IdleDecision()
-        return IdleDecision(closed=_close(episode, now, "break"))
+        reason = "break" if break_active else "square_offline"
+        return IdleDecision(closed=_close(episode, now, reason))
 
     if not view.fresh:
         if episode is None:
@@ -544,6 +546,7 @@ def reconcile_on_poll(
     plan=None,
     view: Optional[MotionView] = None,
     break_active: bool = False,
+    square_offline_active: bool = False,
     next_stop_name: Optional[str] = None,
     sale: Optional[dict] = None,
     now: Optional[datetime.datetime] = None,
@@ -568,6 +571,7 @@ def reconcile_on_poll(
         sales_known=bool(sale.get("known")),
         last_sale_at=sale.get("last_sale_at"),
         break_active=break_active,
+        square_offline_active=square_offline_active,
         episode=episode,
         cfg=cfg,
         next_stop_name=next_stop_name,

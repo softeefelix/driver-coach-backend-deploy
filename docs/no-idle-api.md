@@ -119,10 +119,13 @@ A sale is the latest Square payment with status `COMPLETED` or `APPROVED` and a 
 | `endsAt` | string or null | When the allotment ends. The cab can count down locally; the next poll reconciles. |
 | `remainingS` | number | Seconds left. `0` when nothing is running or the allotment is already over. |
 | `allowedS` | number or null | Allotted length of the active break. |
-| `lunchUsed` | number | Lunches started this shift, including the active one. |
-| `lunchAllowed` | number | Default 1. |
-| `breakUsed` | number | Short breaks started this shift, including the active one. |
-| `breakAllowed` | number | Default 2. |
+| `used` | number | Breaks started today for this driver. |
+| `allowed` | number | Always 1. |
+| `day` | string | Pacific day `YYYY-MM-DD`. |
+| `lunchUsed` | number | 1 once today's break has started, otherwise 0. |
+| `lunchAllowed` | number | Always 1. Mirrors `allowed`. |
+| `breakUsed` | number | 1 once today's break has started, otherwise 0. |
+| `breakAllowed` | number | Always 1. Mirrors `allowed`. |
 | `latestFlag` | object or null | Most recent overrun or over-limit flag this shift. |
 
 `latestFlag`:
@@ -139,7 +142,7 @@ A sale is the latest Square payment with status `COMPLETED` or `APPROVED` and a 
 
 `kind` is `overrun` or `over_limit`. `overrunS` is null on an over-limit attempt.
 
-The shift is the signed-in session. A new sign-in gets a new allowance.
+The allowance is one break per driver per Pacific day, shared by every session that driver signs into that day. `lunch` and `break` are the same hold. `used` / `allowed` are the authority (`allowed` is 1). `lunchUsed` and `breakUsed` both become 1 once that break has started, so an older cab that tracks the two types separately also stops.
 
 While a break is active the server suppresses idle nudges. The break ends when any of these happens:
 
@@ -147,7 +150,7 @@ While a break is active the server suppresses idle nudges. The break ends when a
 - the allotment is over on a poll (`endsAt`)
 - a fresh fix shows speed at or above `moving_speed_mph` (6)
 
-A stale fix does not end a break. Ending within `overrun_grace_s` (60 seconds) of the allotment is not flagged; that covers the 20-second poll. Longer than that is an overrun: the row is flagged and `latestFlag.kind` is `overrun`. Starting another lunch or break after the allowance is refused, logged, and returned as `latestFlag.kind` `over_limit`.
+A stale fix does not end a break. The server closes the break at `endsAt` even if the cab never calls end and even if no route poll arrives: the stored end is the cap (`endReason` `expired`), not the later time someone noticed. A second start the same Pacific day is refused, logged, and returned as `latestFlag.kind` `over_limit`. Movement before the cap still ends it early (`endReason` `moving`).
 
 ## `POST /driver-coach/v1/break/start`
 
@@ -245,10 +248,14 @@ After a break ends, a truck that is still parked starts a new idle clock on the 
 },
 "breaks": {
   "lunch_duration_s": 1800,
-  "break_duration_s": 900,
+  "break_duration_s": 1800,
   "lunch_allowance": 1,
-  "break_allowance": 2,
+  "break_allowance": 1,
+  "breaks_per_driver_day": 1,
   "overrun_grace_s": 60
+},
+"square_offline": {
+  "max_s": 3600
 }
 ```
 
@@ -259,9 +266,112 @@ Stationary, moving, and pin radius are the existing `motion` block: `settled_spe
 In the `driver_coach` schema (never `public`):
 
 - `idle_episode` — one row per idle stretch: `started_at`, `ended_at`, `duration_s`, `lat`, `lng`, `at_stop`, `stop_order`, `end_reason` (`moved`, `sale`, or `break`), and `nudges` (each `{level, at, message, managerAlert}`). `manager_alerted`, `manager_alerted_at`, and `manager_alert_for` (`Felix`) are the manager flag. No email is sent.
-- `shift_break` — each lunch or break, including `end_reason` (`driver`, `expired`, `moving`), `duration_s`, `overrun_s`, `flagged`.
-- `shift_break_flag` — `over_limit` and `overrun` rows.
+- `shift_break` — each break, including `end_reason` (`driver`, `expired`, `moving`), `duration_s`. An expiry records the cap, with `overrun_s` 0.
+- `shift_break_flag` — `over_limit` when a second break is attempted the same Pacific day.
+- `square_offline_period` — each Square-offline mark (`008_square_offline.sql`), including `end_reason` `driver` or `expired`.
 
 `end_reason` `sale` means a Square sale arrived while the truck was still stationary. The sale closes the episode and a new clock starts at the sale time.
 
-Apply `backend/migrations/007_no_idle_breaks.sql` to the service schema before relying on the flags. Until that migration is present the route poll still returns navigation, with `nudge: null` and an empty `break` object.
+Apply `backend/migrations/007_no_idle_breaks.sql` before relying on break flags, and `008_square_offline.sql` before Square offline. Until 007 is present the route poll still returns navigation, with `nudge: null` and an empty `break` object. Until 008 is present, `squareOffline` is an empty inactive object and the rest of the poll still succeeds.
+
+## Square offline
+
+`POST /driver-coach/v1/square-offline/start` and `POST /driver-coach/v1/square-offline/end` take `{ "session_id": "…" }`.
+
+The cap is the constant `SQUARE_OFFLINE_MAX_S` = 3600. Several periods a day are allowed. Each one is kept. A second start while one is still open is `409` `square_offline_active`. While one is active the route poll sends `nudge: null`.
+
+Route poll:
+
+```json
+"squareOffline": {
+  "active": true,
+  "id": "…",
+  "startedAt": "2026-10-15T19:00:00Z",
+  "endsAt": "2026-10-15T20:00:00Z",
+  "remainingS": 3600,
+  "allowedS": 3600,
+  "todayCount": 1,
+  "day": "2026-10-15"
+}
+```
+
+End response adds `ended`: `{ "id", "reason", "endReason", "expired", "startedAt", "endedAt", "durationS" }`. `endReason` is `driver` or `expired`. `expired` is true only for `expired`.
+
+## Hermes read
+
+`GET /driver-coach/v1/idle-exclusions` needs no driver session. It uses the same access as `GET /driver-coach/v1/roster`: this service has no office credential. Optional query `day=YYYY-MM-DD` (Pacific). Omitted means today.
+
+The read closes overdue breaks and Square periods at their caps so history shows `expired`. It does not create a session or write a stop outcome.
+
+```json
+{
+  "day": "2026-10-15",
+  "timezone": "America/Los_Angeles",
+  "asOf": "2026-10-15T19:40:00Z",
+  "breakDurationS": 1800,
+  "squareOfflineMaxS": 3600,
+  "trucks": [
+    {
+      "truckNo": 7,
+      "driverId": "amina_cole",
+      "sessionId": "…",
+      "break": {
+        "active": false,
+        "id": null,
+        "sessionId": null,
+        "driverId": null,
+        "truckNo": null,
+        "startedAt": null,
+        "endsAt": null,
+        "remainingS": 0
+      },
+      "squareOffline": {
+        "active": true,
+        "id": "…",
+        "sessionId": "…",
+        "driverId": "amina_cole",
+        "truckNo": 7,
+        "startedAt": "2026-10-15T19:00:00Z",
+        "endsAt": "2026-10-15T20:00:00Z",
+        "remainingS": 1200
+      }
+    }
+  ],
+  "history": [
+    {
+      "kind": "break",
+      "id": "…",
+      "truckNo": 7,
+      "driverId": "amina_cole",
+      "sessionId": "…",
+      "startedAt": "2026-10-15T18:00:00Z",
+      "endedAt": "2026-10-15T18:30:00Z",
+      "endsAt": "2026-10-15T18:30:00Z",
+      "endReason": "expired",
+      "expired": true,
+      "durationS": 1800,
+      "allowedS": 1800
+    }
+  ]
+}
+```
+
+`history[].kind` is `break` or `square_offline`. `endReason` is `driver`, `expired`, `moving`, or null while the period is still open.
+
+## Nudge suggestions
+
+The route poll also sends `nudgeSuggestions`, at most two stops from this driver's own master route: stops still ahead of the current pin, or master stops the timed plan dropped. Another truck's plan for today is excluded. Rank is Master Route `expPerVisit` (shrunk dollars per visit), highest first.
+
+```json
+"nudgeSuggestions": [
+  {
+    "stopOrder": 4,
+    "stopClusterId": 40,
+    "name": "Dropped Avenue",
+    "why": "dropped",
+    "expPerVisit": 90.0
+  }
+]
+```
+
+`why` is `ahead` or `dropped`. An empty list means there was nothing eligible, or the master tables could not be read. The poll still succeeds. These suggestions do not change the frozen plan or any stop outcome.

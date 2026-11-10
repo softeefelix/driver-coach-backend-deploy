@@ -448,6 +448,8 @@ def build_route_payload(
     refuel_reminder: Optional[Reminder] = None,
     nudge: object = _OMIT,
     break_state: object = _OMIT,
+    square_offline: object = _OMIT,
+    nudge_suggestions: object = _OMIT,
     plan_source: Optional[str] = None,
     session_outcomes: Optional[dict] = None,
     remaining_stop_orders: Optional[list] = None,
@@ -485,8 +487,12 @@ def build_route_payload(
       - nudge                no-idle instruction, or null when the poll evaluated
                              idle and the driver should not be nudged. Omitted only
                              when the caller did not evaluate it.
-      - break                lunch/break state for this shift, including remaining
-                             seconds. Omitted only when the caller did not evaluate it.
+      - break                the one daily break, including remaining seconds. Omitted
+                             only when the caller did not evaluate it.
+      - squareOffline        Square-offline hold for this driver. Omitted only when
+                             the caller did not evaluate it.
+      - nudgeSuggestions     up to two stops from this driver's own master route.
+                             Omitted only when the caller did not evaluate it.
       - route.remainingStopOrders
                              unfinished frozen-plan orders in master snapshot order.
                              Present on the live poll. Confirmed Done/Skip orders are
@@ -639,5 +645,9 @@ def build_route_payload(
         payload["nudge"] = nudge
     if break_state is not _OMIT:
         payload["break"] = break_state
+    if square_offline is not _OMIT:
+        payload["squareOffline"] = square_offline
+    if nudge_suggestions is not _OMIT:
+        payload["nudgeSuggestions"] = nudge_suggestions
     assert_disguise_safe(payload)
     return payload

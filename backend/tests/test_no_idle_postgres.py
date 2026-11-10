@@ -52,6 +52,9 @@ def _prepare(database, schema):
             cur.execute(SESSION)
             cur.execute(MIGRATION)
             cur.execute(MIGRATION)
+            cur.execute(
+                "TRUNCATE driver_coach_session, idle_episode, shift_break, shift_break_flag"
+            )
     finally:
         conn.close()
 
@@ -173,26 +176,32 @@ def test_breaks_allowances_overrun_and_flags(database, schema, monkeypatch):
     assert second_lunch.value.detail["error"] == "over_limit"
     assert second_lunch.value.detail["break"]["latestFlag"]["kind"] == "over_limit"
 
-    for _ in range(2):
-        started = service.do_start_break(service.BreakStartRequest(session_id=sid, type="break"))
-        assert started["break"]["type"] == "break"
-        service.do_end_break(service.BreakEndRequest(session_id=sid))
-    with pytest.raises(breaks.BreakError) as third:
+    with pytest.raises(breaks.BreakError) as second_kind:
         service.do_start_break(service.BreakStartRequest(session_id=sid, type="break"))
-    assert third.value.detail["error"] == "over_limit"
-    assert third.value.detail["message"] == "This shift already used 2 breaks."
+    assert second_kind.value.detail["error"] == "over_limit"
+    assert second_kind.value.detail["message"] == "This driver already used today's break."
+
+    other = str(uuid.uuid4())
+    with _connect(database, schema) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO driver_coach_session (session_id, truck_no, driver_id, route_cluster_id) VALUES (%s,%s,%s,%s)",
+                (other, 8, "amina_cole", 42),
+            )
+        conn.commit()
+    with pytest.raises(breaks.BreakError) as other_session:
+        service.do_start_break(service.BreakStartRequest(session_id=other, type="break"))
+    assert other_session.value.detail["error"] == "over_limit"
 
     with _connect(database, schema) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM shift_break WHERE session_id=%s AND break_type='lunch'", (sid,))
+            cur.execute("SELECT count(*) FROM shift_break WHERE driver_id=%s", ("amina_cole",))
             assert cur.fetchone()[0] == 1
-            cur.execute("SELECT count(*) FROM shift_break WHERE session_id=%s AND break_type='break'", (sid,))
-            assert cur.fetchone()[0] == 2
             cur.execute(
-                "SELECT kind FROM shift_break_flag WHERE session_id=%s ORDER BY created_at",
-                (sid,),
+                "SELECT kind FROM shift_break_flag WHERE driver_id=%s ORDER BY created_at",
+                ("amina_cole",),
             )
-            assert [row[0] for row in cur.fetchall()] == ["over_limit", "over_limit"]
+            assert [row[0] for row in cur.fetchall()] == ["over_limit", "over_limit", "over_limit"]
 
     with pytest.raises(breaks.BreakError) as bad_type:
         service.do_start_break(service.BreakStartRequest(session_id=sid, type="nope"))
@@ -349,18 +358,22 @@ def test_idle_episode_records_nudges_and_poll_hides_them_on_break(database, sche
             assert wrote and state["active"] is False
             cur.execute("SELECT end_reason, flagged FROM shift_break WHERE id=%s", (break_id,))
             assert cur.fetchone() == ("moving", False)
-            lunch = breaks.start(cur, session_id=sid, break_type="lunch", now=T0)
+            other_driver = str(uuid.uuid4())
+            cur.execute(
+                "INSERT INTO driver_coach_session (session_id, truck_no, driver_id, route_cluster_id) VALUES (%s,%s,%s,%s)",
+                (other_driver, 9, "other_driver", 42),
+            )
+            lunch = breaks.start(cur, session_id=other_driver, break_type="lunch", now=T0)
             assert lunch["break"]["active"] is True and lunch["break"]["allowedS"] == 1800
             late, wrote_late = breaks.reconcile_on_poll(
-                cur, session_id=sid, truck_no=7, driver_id="amina_cole",
-                fresh=True, moving=False, now=T0 + timedelta(seconds=1861),
+                cur, session_id=other_driver, truck_no=9, driver_id="other_driver",
+                fresh=True, moving=True, now=T0 + timedelta(seconds=1861),
             )
             assert wrote_late and late["active"] is False
-            assert late["latestFlag"]["kind"] == "overrun"
-            assert late["latestFlag"]["overrunS"] == 61
+            assert late["latestFlag"] is None
             cur.execute(
-                "SELECT end_reason, flagged, overrun_s FROM shift_break WHERE session_id=%s AND break_type='lunch'",
-                (sid,),
+                "SELECT end_reason, flagged, overrun_s, duration_s FROM shift_break WHERE session_id=%s",
+                (other_driver,),
             )
-            assert cur.fetchone() == ("expired", True, 61)
+            assert cur.fetchone() == ("expired", False, 0, 1800)
         conn.commit()
