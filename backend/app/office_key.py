@@ -1,4 +1,4 @@
-"""Shared office key for Hermes reads and the scorecard ingest.
+"""Shared office key for Hermes reads, the scorecard ingest, and Square OAuth.
 
 ``DC_OFFICE_KEY`` is read from the environment on each request. Nothing here
 writes that variable, and the value is never logged. Comparison uses
@@ -38,10 +38,15 @@ def require_office_read(presented: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="office key required")
 
 
-def require_office_ingest(presented: Optional[str]) -> None:
-    """Scorecard ingest. Unset env refuses; a set env requires the header."""
+def require_configured_office_key(presented: Optional[str]) -> None:
+    """A configured office key is required. Unset env is 503; a mismatch is 401."""
     expected = configured_key()
     if expected is None:
         raise HTTPException(status_code=503, detail="office key is not configured")
     if not _matches(presented, expected):
         raise HTTPException(status_code=401, detail="office key required")
+
+
+def require_office_ingest(presented: Optional[str]) -> None:
+    """Scorecard ingest. Unset env refuses; a set env requires the header."""
+    require_configured_office_key(presented)

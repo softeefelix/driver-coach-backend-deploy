@@ -7,16 +7,16 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from . import events, jobber
+from . import events, jobber, square_oauth
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
 SQUARE_API = "https://connect.squareup.com/v2/"
@@ -102,54 +102,72 @@ def build_scorecard(
 
 
 def _square_token(path: str = "~/.hermes/secrets/softeedashboard.env") -> Optional[str]:
-    """Square access token. ``SQUARE_ACCESS_TOKEN`` wins; the Hermes file is fallback.
+    """OAuth token when configured, then ``SQUARE_ACCESS_TOKEN``, then the Hermes file.
 
     The file line is still ``SQUARE_TOKEN=``. A blank env value is ignored so a
-    local file keeps working. No token means callers must not invent a sale.
+    local file keeps working. When ``SQUARE_OAUTH_APP_ID`` is unset this stays the
+    env-then-file lookup and does not read the database.
     """
-    env = os.environ.get("SQUARE_ACCESS_TOKEN")
-    if isinstance(env, str) and env.strip():
-        return env.strip()
+    return square_oauth.resolve_square_access_token(file_path=path)
+
+
+def _http_exchange(request: urllib.request.Request, timeout: float) -> tuple[Optional[dict], int]:
     try:
-        with open(os.path.expanduser(path)) as handle:
-            for line in handle:
-                if line.startswith("SQUARE_TOKEN="):
-                    return line.partition("=")[2].strip().strip('"') or None
-    except OSError:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310: fixed API host
+            body = json.loads(response.read())
+            return (body if isinstance(body, dict) else None), 200
+    except urllib.error.HTTPError as exc:
+        code = int(getattr(exc, "code", 0) or 0)
+        try:
+            exc.close()
+        except Exception:
+            pass
+        return None, code
+    except Exception:
+        return None, 0
+
+
+def _authorized(build, token: str, timeout: float) -> Optional[dict]:
+    """One Square call. A 401 on an OAuth token refreshes once and retries."""
+    body, code = _http_exchange(build(token), timeout)
+    if code != 401:
+        return body if code == 200 else None
+    try:
+        refreshed = square_oauth.refresh_after_unauthorized(token)
+    except Exception:
         return None
-    return None
+    if not isinstance(refreshed, str) or not refreshed or refreshed == token:
+        return None
+    body, code = _http_exchange(build(refreshed), timeout)
+    return body if code == 200 else None
 
 
 def _square_get(path: str, token: str) -> Optional[dict]:
-    request = urllib.request.Request(
-        urllib.parse.urljoin(SQUARE_API, path),
-        headers={"Authorization": f"Bearer {token}", "Square-Version": SQUARE_VERSION},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=4) as response:  # nosec B310: fixed API host
-            body = json.loads(response.read())
-            return body if isinstance(body, dict) else None
-    except Exception:
-        return None
+    def build(tok: str) -> urllib.request.Request:
+        return urllib.request.Request(
+            urllib.parse.urljoin(SQUARE_API, path),
+            headers={"Authorization": f"Bearer {tok}", "Square-Version": SQUARE_VERSION},
+        )
+
+    return _authorized(build, token, 4)
 
 
 def _square_post(path: str, token: str, payload: dict) -> Optional[dict]:
-    request = urllib.request.Request(
-        urllib.parse.urljoin(SQUARE_API, path),
-        data=json.dumps(payload).encode(),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Square-Version": SQUARE_VERSION,
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=8) as response:  # nosec B310: fixed API host
-            body = json.loads(response.read())
-            return body if isinstance(body, dict) else None
-    except Exception:
-        return None
+    raw = json.dumps(payload).encode()
+
+    def build(tok: str) -> urllib.request.Request:
+        return urllib.request.Request(
+            urllib.parse.urljoin(SQUARE_API, path),
+            data=raw,
+            headers={
+                "Authorization": f"Bearer {tok}",
+                "Square-Version": SQUARE_VERSION,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+    return _authorized(build, token, 8)
 
 
 def _team(token: str) -> Optional[dict[str, str]]:

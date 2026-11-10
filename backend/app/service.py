@@ -84,6 +84,7 @@ def _with_leave_by(evs: list, next_stop) -> list:
     return out
 from . import scorecard
 from . import school_slack
+from .square_oauth import router as square_oauth_router
 from .config import flag_config, mapbox_token
 from .db import DEFAULT_SCHEMA, connect
 from .motion import phase_for_fix
@@ -101,6 +102,7 @@ from .refcore import DRIVING
 from .refuel import RefuelNightBook, Reminder
 
 app = FastAPI(title="Driver Coach v1", version="1.0.0")
+app.include_router(square_oauth_router)
 _log = logging.getLogger(__name__)
 _square_missing_lock = threading.Lock()
 _square_table_missing_logged = False
