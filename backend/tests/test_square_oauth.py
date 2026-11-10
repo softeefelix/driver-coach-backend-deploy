@@ -1,10 +1,12 @@
 """Square OAuth PKCE: office link, nonce, token storage, and refresh."""
 import email.message
 import hashlib
+import html
 import io
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -233,6 +235,7 @@ def test_disabled_when_app_id_unset_leaves_the_file_token(database, monkeypatch,
     for method, url in (
         ("post", LINK),
         ("get", START),
+        ("post", START),
         ("get", CALLBACK),
         ("get", STATUS),
     ):
@@ -275,16 +278,30 @@ def test_start_never_accepts_the_office_key(monkeypatch, client):
     assert refused.headers.get("location") is None
     assert "connect.squareup.com" not in refused.text
     assert client.get(START, params={"t": OFFICE}, headers=HEADER).status_code == 400
+    assert client.post(START, data={"t": OFFICE}, headers=HEADER).status_code == 400
+    assert client.post(START, data={"k": OFFICE}, headers=HEADER).status_code == 400
 
     _body, nonce = _issued_nonce(client)
     opened = client.get(
         START,
         params={"t": nonce, "k": OFFICE},
         headers={"X-DC-Office-Key": "wrong-key"},
+    )
+    assert opened.status_code == 200
+    assert opened.headers.get("location") is None
+    assert "Continue to Square" in opened.text
+    assert "connect.squareup.com" not in opened.text
+    assert OFFICE not in opened.text
+    assert "wrong-key" not in opened.text
+
+    started = client.post(
+        START,
+        data={"t": nonce, "k": OFFICE},
+        headers={"X-DC-Office-Key": "wrong-key"},
         follow_redirects=False,
     )
-    assert opened.status_code == 302
-    location = opened.headers["location"]
+    assert started.status_code == 303
+    location = started.headers["location"]
     assert location.startswith("https://connect.squareup.com/oauth2/authorize?")
     assert OFFICE not in location
     assert "wrong-key" not in location
@@ -293,7 +310,33 @@ def test_start_never_accepts_the_office_key(monkeypatch, client):
     assert query["client_id"] == [APP_ID]
 
 
-def test_link_nonce_is_hashed_and_replay_is_rejected(database, monkeypatch, client, caplog):
+def _hidden_fields(body: str) -> dict:
+    return {
+        name: html.unescape(value)
+        for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', body)
+    }
+
+
+def _assert_confirm_page(response, *, posts_nonce=None):
+    assert response.status_code == 200
+    assert response.headers.get("location") is None
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "<title>Connect Square to Driver Coach</title>" in response.text
+    assert "read-only access to payments and team members" in response.text
+    assert 'name="robots" content="noindex"' in response.text
+    assert response.text.count("<form") == 1
+    assert response.text.count("Continue to Square") == 1
+    assert response.text.count("<button") == 1
+    if posts_nonce is None:
+        return
+    assert 'method="post"' in response.text
+    assert 'action="/driver-coach/v1/square/oauth/start"' in response.text
+    assert _hidden_fields(response.text)["t"] == posts_nonce
+    assert "connect.squareup.com" not in response.text
+
+
+def test_link_nonce_is_hashed_and_get_does_not_consume(database, monkeypatch, client, caplog):
     _enable(monkeypatch)
     with caplog.at_level(logging.DEBUG):
         body, nonce = _issued_nonce(client)
@@ -310,29 +353,242 @@ def test_link_nonce_is_hashed_and_replay_is_rejected(database, monkeypatch, clie
     assert stored[0][1] is None
     _assert_absent(caplog.text, nonce, OFFICE)
 
-    first = client.get(START, params={"t": nonce}, follow_redirects=False)
-    assert first.status_code == 302
-    again = client.get(START, params={"t": nonce}, follow_redirects=False)
-    assert again.status_code == 400
-    assert "already been used" in again.text
-    assert again.headers.get("location") is None
+    first = client.get(START, params={"t": nonce})
+    second = client.get(START, params={"t": nonce})
+    _assert_confirm_page(first, posts_nonce=nonce)
+    _assert_confirm_page(second, posts_nonce=nonce)
+    assert _sql(database, "SELECT used_at FROM square_oauth_link")[0][0] is None
+    assert _sql(database, "SELECT count(*) FROM square_oauth_state")[0][0] == 0
+
+    ignored = client.post(START, params={"t": nonce}, follow_redirects=False)
+    assert ignored.status_code == 400
+    assert ignored.headers.get("location") is None
+    assert _sql(database, "SELECT used_at FROM square_oauth_link")[0][0] is None
+
+    posted = client.post(START, data={"t": nonce}, follow_redirects=False)
+    assert posted.status_code == 303
+    assert posted.headers["cache-control"] == "no-store"
+    assert posted.headers["referrer-policy"] == "no-referrer"
+    location = posted.headers["location"]
+    assert location.startswith("https://connect.squareup.com/oauth2/authorize?")
+    assert "squareup.com" in location
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(location).query)
+    assert query["session"] == ["false"]
+    assert query["code_challenge_method"] == ["S256"]
+    assert query["redirect_uri"] == [REDIRECT]
+    assert set(query["scope"][0].split()) == {"PAYMENTS_READ", "EMPLOYEES_READ"}
+    assert "WRITE" not in query["scope"][0]
+    verifier, state = _sql(database, "SELECT code_verifier, state FROM square_oauth_state")[0]
+    assert query["code_challenge"] == [square_oauth.code_challenge_s256(verifier)]
+    assert query["state"] == [state]
+    assert state == hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+    _assert_absent(location, verifier, nonce)
     assert _sql(database, "SELECT count(*) FROM square_oauth_state")[0][0] == 1
-    assert _sql(database, "SELECT count(*) FROM square_oauth_link WHERE used_at IS NOT NULL")[0][0] == 1
+    assert _sql(database, "SELECT used_at FROM square_oauth_link")[0][0] is not None
 
 
 def test_link_nonce_expiry(database, monkeypatch, client):
     _enable(monkeypatch)
+    for method, kwargs in (
+        ("get", {"params": {"t": "not-a-real-nonce"}}),
+        ("post", {"data": {"t": "not-a-real-nonce"}}),
+        ("get", {}),
+        ("post", {"data": {}}),
+    ):
+        response = getattr(client, method)(START, follow_redirects=False, **kwargs)
+        assert response.status_code == 400
+        assert "invalid" in response.text
+        assert response.headers.get("location") is None
+        assert "connect.squareup.com" not in response.text
+    assert _sql(database, "SELECT count(*) FROM square_oauth_link")[0][0] == 0
+
     _body, nonce = _issued_nonce(client)
     _sql(
         database,
         "UPDATE square_oauth_link SET expires_at = now() - interval '1 minute' WHERE token_hash = %s",
         (hashlib.sha256(nonce.encode("utf-8")).hexdigest(),),
     )
-    expired = client.get(START, params={"t": nonce}, follow_redirects=False)
-    assert expired.status_code == 400
-    assert "expired" in expired.text
-    assert expired.headers.get("location") is None
+    for response in (
+        client.get(START, params={"t": nonce}, follow_redirects=False),
+        client.post(START, data={"t": nonce}, follow_redirects=False),
+    ):
+        assert response.status_code == 400
+        assert "expired" in response.text
+        assert "Ask for a new one" in response.text
+        assert response.headers.get("location") is None
+        assert "connect.squareup.com" not in response.text
     assert _sql(database, "SELECT count(*) FROM square_oauth_state")[0][0] == 0
+    assert _sql(database, "SELECT used_at FROM square_oauth_link")[0][0] is None
+
+
+def _assert_same_square_form(response, original, verifier):
+    _assert_confirm_page(response)
+    assert 'method="get"' in response.text
+    assert 'action="https://connect.squareup.com/oauth2/authorize"' in response.text
+    fields = _hidden_fields(response.text)
+    assert fields["state"] == original["state"][0]
+    assert fields["code_challenge"] == original["code_challenge"][0]
+    assert fields["code_challenge_method"] == "S256"
+    assert fields["session"] == "false"
+    assert fields["client_id"] == APP_ID
+    assert fields["redirect_uri"] == original["redirect_uri"][0]
+    assert set(fields["scope"].split()) == set(original["scope"][0].split())
+    assert "code_verifier" not in fields
+    assert verifier not in response.text
+    assert "t" not in fields
+
+
+def test_reget_after_consumption_reuses_the_stored_state(database, monkeypatch, client):
+    _enable(monkeypatch)
+    _body, nonce = _issued_nonce(client)
+    posted = client.post(START, data={"t": nonce}, follow_redirects=False)
+    assert posted.status_code == 303
+    original = urllib.parse.parse_qs(urllib.parse.urlsplit(posted.headers["location"]).query)
+    before = _sql(
+        database,
+        "SELECT state, code_verifier, redirect_uri, expires_at, used_at FROM square_oauth_state",
+    )
+    verifier = before[0][1]
+
+    again = client.get(START, params={"t": nonce})
+    repeated = client.get(START, params={"t": nonce})
+    repost = client.post(START, data={"t": nonce})
+    for response in (again, repeated, repost):
+        _assert_same_square_form(response, original, verifier)
+        assert nonce not in response.text
+    after = _sql(
+        database,
+        "SELECT state, code_verifier, redirect_uri, expires_at, used_at FROM square_oauth_state",
+    )
+    assert after == before
+    assert _sql(database, "SELECT count(*) FROM square_oauth_state")[0][0] == 1
+
+    digest = hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+    _sql(
+        database,
+        """UPDATE square_oauth_link
+           SET used_at = now() - interval '1 minute',
+               expires_at = now() - interval '1 minute'
+           WHERE token_hash = %s""",
+        (digest,),
+    )
+    still = client.get(START, params={"t": nonce})
+    _assert_same_square_form(still, original, verifier)
+
+
+def test_replay_window_stops_at_ten_minutes_or_state_expiry(database, monkeypatch, client):
+    _enable(monkeypatch)
+    _body, nonce = _issued_nonce(client)
+    assert client.post(START, data={"t": nonce}, follow_redirects=False).status_code == 303
+    digest = hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+    verifier = _sql(database, "SELECT code_verifier FROM square_oauth_state")[0][0]
+
+    _sql(
+        database,
+        "UPDATE square_oauth_link SET used_at = now() - interval '9 minutes' WHERE token_hash = %s",
+        (digest,),
+    )
+    fresh = client.get(START, params={"t": nonce})
+    assert fresh.status_code == 200
+    assert "https://connect.squareup.com/oauth2/authorize" in fresh.text
+
+    _sql(
+        database,
+        "UPDATE square_oauth_link SET used_at = now() - interval '11 minutes' WHERE token_hash = %s",
+        (digest,),
+    )
+    for response in (
+        client.get(START, params={"t": nonce}, follow_redirects=False),
+        client.post(START, data={"t": nonce}, follow_redirects=False),
+    ):
+        assert response.status_code == 400
+        assert "Ask for a new one" in response.text
+        assert "connect.squareup.com" not in response.text
+        assert "Square is already connected" not in response.text
+    assert _sql(database, "SELECT code_verifier, used_at FROM square_oauth_state")[0] == (verifier, None)
+    assert _sql(database, "SELECT count(*) FROM square_oauth_state")[0][0] == 1
+
+    _sql(
+        database,
+        "UPDATE square_oauth_link SET used_at = now() WHERE token_hash = %s",
+        (digest,),
+    )
+    _sql(
+        database,
+        "UPDATE square_oauth_state SET expires_at = now() - interval '1 minute' WHERE state = %s",
+        (digest,),
+    )
+    expired_state = client.get(START, params={"t": nonce})
+    assert expired_state.status_code == 400
+    assert "Start again" in expired_state.text
+    assert "connect.squareup.com" not in expired_state.text
+    assert _sql(database, "SELECT count(*) FROM square_oauth_state")[0][0] == 1
+
+
+def test_finished_callback_says_square_is_already_connected(database, monkeypatch, client):
+    _enable(monkeypatch)
+
+    def post(url, payload, timeout=10):
+        return {
+            "access_token": AT,
+            "refresh_token": RT,
+            "expires_at": "2026-12-10T19:00:00Z",
+            "merchant_id": "MERCHANT1",
+        }
+
+    monkeypatch.setattr(square_oauth, "_post_json", post)
+    _body, nonce = _issued_nonce(client)
+    started = client.post(START, data={"t": nonce}, follow_redirects=False)
+    state = urllib.parse.parse_qs(urllib.parse.urlsplit(started.headers["location"]).query)["state"][0]
+    done = client.get(CALLBACK, params={"code": CODE, "state": state})
+    assert done.status_code == 200
+    for response in (
+        client.get(START, params={"t": nonce}),
+        client.post(START, data={"t": nonce}),
+    ):
+        assert response.status_code == 400
+        assert "Square is already connected" in response.text
+        assert "connect.squareup.com" not in response.text
+        _assert_absent(response.text, AT, RT, CODE, nonce)
+
+    _sql(database, "DELETE FROM square_oauth_token")
+    quiet = client.get(START, params={"t": nonce})
+    assert quiet.status_code == 400
+    assert "Square is already connected" not in quiet.text
+    assert "already been used" in quiet.text
+
+
+def test_parallel_posts_create_one_state(database, monkeypatch, client):
+    _enable(monkeypatch)
+    _body, nonce = _issued_nonce(client)
+    barrier = threading.Barrier(2)
+    results = []
+    errors = []
+
+    def work():
+        try:
+            barrier.wait(5)
+            results.append(square_oauth._resolve_start(nonce, consume=True))
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert errors == []
+    assert not any(thread.is_alive() for thread in threads)
+    assert sorted(item.kind for item in results) == ["confirm", "redirect"]
+    redirect = next(item for item in results if item.kind == "redirect")
+    confirm = next(item for item in results if item.kind == "confirm")
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(redirect.location).query)
+    assert dict(confirm.fields)["state"] == query["state"][0]
+    assert dict(confirm.fields)["code_challenge"] == query["code_challenge"][0]
+    assert _sql(database, "SELECT count(*) FROM square_oauth_state")[0][0] == 1
+    verifier = _sql(database, "SELECT code_verifier FROM square_oauth_state")[0][0]
+    opened = client.get(START, params={"t": nonce})
+    _assert_same_square_form(opened, query, verifier)
 
 
 def test_pkce_callback_hides_tokens_and_rejects_state_replay(database, monkeypatch, client, caplog):
@@ -351,8 +607,8 @@ def test_pkce_callback_hides_tokens_and_rejects_state_replay(database, monkeypat
     monkeypatch.setattr(square_oauth, "_post_json", post)
     _body, nonce = _issued_nonce(client)
     with caplog.at_level(logging.DEBUG):
-        started = client.get(START, params={"t": nonce}, follow_redirects=False)
-    assert started.status_code == 302
+        started = client.post(START, data={"t": nonce}, follow_redirects=False)
+    assert started.status_code == 303
     location = started.headers["location"]
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(location).query)
     assert query["session"] == ["false"]
@@ -401,7 +657,7 @@ def test_state_expiry_does_not_exchange(database, monkeypatch, client):
         lambda url, payload, timeout=10: posts.append(payload),
     )
     _body, nonce = _issued_nonce(client)
-    started = client.get(START, params={"t": nonce}, follow_redirects=False)
+    started = client.post(START, data={"t": nonce}, follow_redirects=False)
     state = urllib.parse.parse_qs(urllib.parse.urlsplit(started.headers["location"]).query)["state"][0]
     _sql(database, "UPDATE square_oauth_state SET expires_at = now() - interval '1 minute'")
     expired = client.get(CALLBACK, params={"code": CODE, "state": state})
@@ -417,7 +673,8 @@ def test_redirect_uri_override_is_sent_on_the_link_and_the_authorize_url(monkeyp
     monkeypatch.setenv("SQUARE_OAUTH_REDIRECT_URI", custom)
     _body, nonce = _issued_nonce(client)
     assert _body["url"].startswith("https://example.test/driver-coach/v1/square/oauth/start?t=")
-    started = client.get(START, params={"t": nonce}, follow_redirects=False)
+    started = client.post(START, data={"t": nonce}, follow_redirects=False)
+    assert started.status_code == 303
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(started.headers["location"]).query)
     assert query["redirect_uri"] == [custom]
 
@@ -607,6 +864,7 @@ def test_missing_table_is_503_and_token_resolution_falls_back(database, monkeypa
     assert client.post(LINK, headers=HEADER).status_code == 503
     assert client.get(STATUS, headers=HEADER).status_code == 503
     assert client.get(START, params={"t": "anything"}).status_code == 503
+    assert client.post(START, data={"t": "anything"}).status_code == 503
     assert client.get(CALLBACK, params={"code": "x", "state": "y"}).status_code == 503
     path = tmp_path / "softeedashboard.env"
     path.write_text('SQUARE_TOKEN="file-token"\n')
